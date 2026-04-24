@@ -1,0 +1,41 @@
+Screen {
+    layout: vertical;
+}
+
+#header {
+    height: 3;
+    background: $primary;
+    color: $text;
+    content-align: center middle;
+    text-style: bold;
+}
+
+#total {
+    height: 3;
+    background: $surface;
+    color: $success;
+    content-align: center middle;
+    text-style: bold;
+    border-top: solid $primary;
+}
+
+PortfolioTable {
+    height: 1fr;
+}
+
+LoadingIndicator {
+    height: 1fr;
+}
+
+PieChart {
+    height: 1fr;
+    display: none;
+}
+
+#footer {
+    height: 1;
+    background: $primary-darken-2;
+    color: $text-muted;
+    content-align: right middle;
+    padding: 0 1;
+}
