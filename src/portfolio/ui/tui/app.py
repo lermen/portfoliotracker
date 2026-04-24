@@ -134,7 +134,7 @@ class PortfolioApp(App[None]):
         self.query_one(PieChart).set_data(list(category_totals.items()), hide_values=self.hide_values)
 
         _BRT = ZoneInfo("America/Sao_Paulo")
-        ts = self.snapshot.timestamp.astimezone(_BRT).strftime("%H:%M:%S")
+        ts = self.snapshot.timestamp.astimezone(_BRT).strftime("%H:%M")
 
         def _fmt_delta(current: float, previous: float) -> str:
             delta = current - previous
