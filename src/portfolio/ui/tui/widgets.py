@@ -104,11 +104,10 @@ class PieChart(Widget):
     """
 
     def __init__(self, **kwargs: Any) -> None:
-        # `**kwargs` captures any keyword arguments and forwards them to the parent.
-        # This allows callers to pass Textual's standard widget options (like `id=`).
         super().__init__(**kwargs)
         self._slices: list[tuple[str, float]] = []  # (label, value) pairs
         self._hide_values: bool = False
+        self._max_label_len: int = 10  # updated in set_data to fit the longest label
 
     def set_data(self, slices: list[tuple[str, float]], hide_values: bool = False) -> None:
         """Set (label, value) pairs; groups tail items as 'Other'.
@@ -126,7 +125,8 @@ class PieChart(Widget):
         else:
             self._slices = sorted_slices
         self._hide_values = hide_values
-        # `self.refresh()` tells Textual to re-render this widget on the next frame.
+        # Compute once so render_line can align all rows to the same column widths.
+        self._max_label_len = max((len(label) for label, _ in self._slices), default=10)
         self.refresh()
 
     def render_line(self, y: int) -> Strip:
@@ -206,19 +206,21 @@ class PieChart(Widget):
                 pct = value / total * 100
                 color = _PALETTE[li % len(_PALETTE)]
                 bullet = Segment(" ■ ", Style(color=color, bold=True))
+                lw = self._max_label_len
                 if self._hide_values:
-                    text = f"{label:<10} {pct:5.1f}%"        # left-aligned in 10 chars
+                    text = f"{label:<{lw}} {pct:5.1f}%"
                 else:
-                    text = f"{label:<10} {pct:5.1f}%  R${value:>12,.2f}"   # right-aligned value
-                text = text[: legend_w - 3].ljust(legend_w - 3)   # truncate + pad to fit
+                    text = f"{label:<{lw}} {pct:5.1f}%  R${value:>12,.2f}"
+                text = text[: legend_w - 3].ljust(legend_w - 3)
                 segments.append(bullet)
                 segments.append(Segment(text))
             elif li == len(self._slices) + 1:
                 # Total line — two rows below the last item (one blank gap).
+                lw = self._max_label_len
                 if self._hide_values:
-                    text = f"   {'Total':<10}"
+                    text = f"   {'Total':<{lw}}"
                 else:
-                    text = f"   {'Total':<10} {'':6}  R${total:>12,.2f}"
+                    text = f"   {'Total':<{lw}} {'':6}  R${total:>12,.2f}"
                 text = text[:legend_w].ljust(legend_w)
                 segments.append(Segment(text, Style(bold=True)))
             else:
