@@ -19,7 +19,22 @@ Screen {
     border-top: solid $primary;
 }
 
+/* TabbedContent fills all remaining vertical space between the header and total bar. */
+TabbedContent {
+    height: 1fr;
+}
+
+/* TabPane must also stretch to fill the tab content area. */
+TabPane {
+    height: 1fr;
+    padding: 0;
+}
+
 PortfolioTable {
+    height: 1fr;
+}
+
+FixedIncomeTable {
     height: 1fr;
 }
 
@@ -29,7 +44,6 @@ LoadingIndicator {
 
 PieChart {
     height: 1fr;
-    display: none;
 }
 
 #footer {

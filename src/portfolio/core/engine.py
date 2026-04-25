@@ -6,7 +6,7 @@ import structlog
 from portfolio.core.exceptions import PriceFetchError
 from portfolio.core.fetcher import fetch_all_prices, fetch_fx_rates
 from portfolio.core.models import PortfolioSnapshot, PositionValue
-from portfolio.core.reader import read_positions
+from portfolio.core.reader import read_fixed_income, read_positions
 from portfolio.core.settings import settings
 
 log = structlog.get_logger()
@@ -29,10 +29,16 @@ async def run_engine(queue: asyncio.Queue[PortfolioSnapshot]) -> None:
 
     while True:
         try:
-            # --- Step 1: Read what the user holds ---
-            positions = await read_positions(settings.excel_path)
+            # --- Step 1: Read both sheets concurrently from the Excel file ---
+            # `asyncio.TaskGroup` is Python 3.11+'s structured concurrency primitive.
+            # Both tasks start at the same time; the `async with` block waits for
+            # both to finish (or cancels all if one raises).
+            async with asyncio.TaskGroup() as tg:
+                pos_task = tg.create_task(read_positions(settings.excel_path))
+                fi_task = tg.create_task(read_fixed_income(settings.excel_path))
+            positions = pos_task.result()
+            fixed_income = fi_task.result()
 
-            # List comprehension: extract just the ticker string from each Position.
             tickers = [p.ticker for p in positions]
 
             # --- Step 2: Fetch live prices for all tickers concurrently ---
@@ -97,9 +103,9 @@ async def run_engine(queue: asyncio.Queue[PortfolioSnapshot]) -> None:
                 return value_brl / (1.0 + change_pct / 100.0)
 
             # --- Step 5: Build and publish the snapshot ---
+            fi_total = sum(fi.amount_brl for fi in fixed_income)
             snapshot = PortfolioSnapshot(
                 positions=position_values,
-                # Generator expression inside `sum()`: sum up value_brl for each position.
                 total_value=sum(pv.value_brl for pv in position_values),
                 total_value_24h=sum(
                     _value_before(pv.value_brl, pv.change_pct)
@@ -109,9 +115,9 @@ async def run_engine(queue: asyncio.Queue[PortfolioSnapshot]) -> None:
                     _value_before(pv.value_brl, pv.change_pct_1w)
                     for pv in position_values
                 ),
+                fixed_income=fixed_income,
+                fixed_income_total=fi_total,
                 currency="BRL",
-                # `datetime.now(UTC)` returns the current time with timezone info attached.
-                # Always store times in UTC and convert to local time only for display.
                 timestamp=datetime.now(UTC),
             )
 

@@ -22,7 +22,7 @@ from rich.segment import Segment   # a piece of text with an optional style
 from rich.style import Style       # foreground/background color, bold, italic, etc.
 from rich.text import Text         # a string that carries per-character styles
 
-from portfolio.core.models import PortfolioSnapshot
+from portfolio.core.models import FixedIncomePosition, PortfolioSnapshot
 
 # Tuple of column header strings — used both here and when rebuilding the table.
 COLUMNS = ("Ticker", "Exchange", "Category", "Quantity", "Price", "Value (R$)", "24h %", "1W %")
@@ -100,7 +100,6 @@ class PieChart(Widget):
     DEFAULT_CSS = """
     PieChart {
         height: 1fr;
-        display: none;
     }
     """
 
@@ -368,4 +367,46 @@ class PortfolioTable(DataTable):  # type: ignore[type-arg]
         if saved_row is not None:
             # `min(saved_row, self.row_count - 1)` prevents the cursor from going
             # past the last row if rows were removed since the last update.
+            self.move_cursor(row=min(saved_row, self.row_count - 1))
+
+
+_FI_COLUMNS = ("Name", "Amount (R$)", "% of Portfolio")
+
+
+class FixedIncomeTable(DataTable):  # type: ignore[type-arg]
+    """A DataTable that displays fixed income positions.
+
+    Each row shows the investment name, its BRL amount, and its share of the
+    total portfolio (variable positions + fixed income combined).
+    """
+
+    def on_mount(self) -> None:
+        self.add_columns(*_FI_COLUMNS)
+        self.cursor_type = "row"
+
+    def update(
+        self,
+        positions: list[FixedIncomePosition],
+        grand_total: float,
+        hide_values: bool = False,
+    ) -> None:
+        """Rebuild the table from the current fixed income list.
+
+        `grand_total` is the full portfolio value (variable + fixed income) so
+        that each row's percentage reflects its share of the whole pie.
+        """
+        saved_row = self.cursor_row if self.row_count > 0 else None
+        self.clear()
+
+        # Sort alphabetically so the order is stable across refreshes.
+        for fi in sorted(positions, key=lambda x: x.name):
+            pct = fi.amount_brl / grand_total * 100 if grand_total > 0 else 0.0
+            self.add_row(
+                fi.name,
+                "-----" if hide_values else f"R${fi.amount_brl:,.2f}",
+                f"{pct:.1f}%",
+                key=fi.name,
+            )
+
+        if saved_row is not None:
             self.move_cursor(row=min(saved_row, self.row_count - 1))

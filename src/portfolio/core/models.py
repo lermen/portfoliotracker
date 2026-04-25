@@ -16,6 +16,13 @@ class Position(BaseModel):
     category: str = ""
 
 
+# A `FixedIncomePosition` is a simple investment with a known BRL value —
+# no ticker or price fetch needed; the amount is the value by definition.
+class FixedIncomePosition(BaseModel):
+    name: str
+    amount_brl: float = Field(gt=0)
+
+
 # A `PositionValue` enriches a Position with live market data: price, BRL value, etc.
 # `float | None` is Python 3.10+ syntax for "this can be a float OR None (missing)".
 # It is equivalent to `Optional[float]` from the `typing` module.
@@ -40,9 +47,11 @@ class PositionValue(BaseModel):
 # time. The engine publishes one of these every refresh cycle. The UI only ever
 # reads snapshots — it never talks to the fetcher directly (separation of concerns).
 class PortfolioSnapshot(BaseModel):
-    positions: list[PositionValue]   # `list[X]` is a generic — a list whose items are PositionValue
-    total_value: float
-    total_value_24h: float | None = None   # what the portfolio was worth 24 h ago
-    total_value_1w: float | None = None    # what it was worth 1 week ago
+    positions: list[PositionValue]
+    total_value: float                        # sum of variable positions only
+    total_value_24h: float | None = None
+    total_value_1w: float | None = None
+    fixed_income: list[FixedIncomePosition] = []
+    fixed_income_total: float = 0.0           # sum of all fixed income amounts
     currency: str = "BRL"
-    timestamp: datetime                    # when this snapshot was computed (UTC)
+    timestamp: datetime

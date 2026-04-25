@@ -12,7 +12,7 @@ import openpyxl
 import structlog
 
 from portfolio.core.exceptions import ExcelParseError
-from portfolio.core.models import Position
+from portfolio.core.models import FixedIncomePosition, Position
 
 # Get a logger bound to this module. The `log` variable is used throughout the
 # file to emit log events. Structured loggers let you attach arbitrary context:
@@ -28,9 +28,13 @@ def _parse_excel(path: Path) -> list[Position]:
         # `read_only=True` streams the file without loading it all into memory.
         # `data_only=True` returns the cached cell values instead of Excel formulas.
         wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-        ws = wb.active   # the "active" sheet is the one that was open when the file was saved
-        if ws is None:
-            raise ExcelParseError("Workbook has no active sheet")
+        # Use the first sheet by position, not `wb.active`. `active` reflects
+        # whichever tab was open when the file was last saved in Excel — if the
+        # user saved while on the FixedIncome tab, `active` would point there
+        # instead of the positions sheet.
+        if not wb.worksheets:
+            raise ExcelParseError("Workbook has no sheets")
+        ws = wb.worksheets[0]
 
         positions: list[Position] = []
 
@@ -77,6 +81,52 @@ def _parse_excel(path: Path) -> list[Position]:
         # `raise ... from exc` preserves the original traceback (the "cause"),
         # which is invaluable when debugging.
         raise ExcelParseError(f"Failed to parse {path}: {exc}") from exc
+
+
+def _parse_fixed_income(path: Path) -> list[FixedIncomePosition]:
+    """Parse the 'FixedIncome' sheet from the Excel file.
+
+    The sheet is optional — if it doesn't exist, an empty list is returned so
+    the rest of the app can run without modification.
+
+    Expected columns (row 1 is the header):
+      A: Name     — a descriptive label for the investment
+      B: Amount   — the current BRL value
+    """
+    try:
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+
+        # `wb.sheetnames` is a list of sheet name strings in the workbook.
+        if "FixedIncome" not in wb.sheetnames:
+            wb.close()
+            log.info("fixed_income_sheet_missing", path=str(path))
+            return []
+
+        ws = wb["FixedIncome"]
+        items: list[FixedIncomePosition] = []
+
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            name, amount = row[0], row[1]
+            if name is None or amount is None:
+                continue
+            items.append(
+                FixedIncomePosition(
+                    name=str(name).strip(),
+                    amount_brl=float(amount),
+                )
+            )
+
+        wb.close()
+        log.info("fixed_income_parsed", path=str(path), count=len(items))
+        return items
+
+    except Exception as exc:
+        raise ExcelParseError(f"Failed to parse FixedIncome sheet in {path}: {exc}") from exc
+
+
+async def read_fixed_income(path: Path) -> list[FixedIncomePosition]:
+    """Read fixed income positions from the Excel file asynchronously."""
+    return await asyncio.to_thread(_parse_fixed_income, path)
 
 
 async def read_positions(path: Path) -> list[Position]:
