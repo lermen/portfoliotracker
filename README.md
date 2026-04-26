@@ -5,6 +5,55 @@ file and displays their current market value, refreshed automatically.
 
 ---
 
+## Architecture
+
+### Data Pipeline
+
+Data flows in one direction: from your Excel file, through price fetching, into a
+queue that feeds any number of UI consumers independently.
+
+```mermaid
+flowchart TD
+    A[portfolio.xlsx] --> B[reader.py\nParses Excel into Positions]
+    B --> C[fetcher.py\nFetches prices async via httpx]
+    C --> D[engine.py\nComputes totals, builds PortfolioSnapshot]
+    D --> E[asyncio.Queue]
+    E --> F[tui/app.py\nTextual TUI]
+    E --> G[web/app.py\nFuture Web UI]
+```
+
+### Data Models
+
+The app uses three Pydantic models to represent data at different stages of the
+pipeline. `Position` is the raw input from Excel. It gets enriched with a live
+price into `PositionValue`, and a collection of those is bundled into a
+`PortfolioSnapshot` that gets pushed to the queue on every refresh cycle.
+
+```mermaid
+classDiagram
+    class Position {
+        +str ticker
+        +float quantity
+    }
+    class PositionValue {
+        +str ticker
+        +float quantity
+        +float price
+        +float value
+    }
+    class PortfolioSnapshot {
+        +list~PositionValue~ positions
+        +float total_value
+        +str currency
+        +datetime timestamp
+    }
+
+    Position --> PositionValue : enriched with price
+    PositionValue --> PortfolioSnapshot : collected into
+```
+
+---
+
 ## Requirements
 
 - Python 3.12 or higher
