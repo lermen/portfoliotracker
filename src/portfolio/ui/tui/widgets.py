@@ -1,31 +1,57 @@
+# This module contains all custom Textual widgets used in the TUI.
+#
+# A "widget" in Textual is a reusable UI component — the building block of the
+# terminal interface. Textual ships with many built-in widgets (DataTable, Static,
+# Header, Footer, etc.) and lets you build custom ones by subclassing `Widget`.
+#
+# Widgets in this file:
+#   PieChart          — a custom rendered circular chart using Unicode block characters
+#   MetricCard        — a bordered card showing one metric (title + value + subtitle)
+#   BitcoinMetricsPanel — a panel composing multiple MetricCards for the Bitcoin tab
+#   PortfolioTable    — a DataTable subclass that knows how to render a PortfolioSnapshot
+#   FixedIncomeTable  — a DataTable subclass for the fixed-income sheet
+#
+# None of these widgets import anything from `portfolio.core.engine` or any other
+# backend module. They only consume model objects (`PortfolioSnapshot`, etc.) that
+# are handed to them via method calls from `app.py`. This is the UI/backend
+# separation rule enforced throughout the project.
+
 import math
 from typing import Any
 
+# Rich library types for terminal styling.
+from rich.segment import Segment  # a piece of text with an optional style
+from rich.style import Style  # foreground/background color, bold, italic, etc.
+from rich.text import Text  # a string that carries per-character styles
+
 # `RenderableType` is Rich's union type for anything that can be rendered in a
 # terminal: a plain string, a `Text` object, a table, etc.
-from textual.app import RenderableType
+from textual.app import ComposeResult, RenderableType
 
-# `DataTable` is a built-in Textual widget that displays rows and columns with
-# keyboard navigation (arrow keys, cursor highlighting, selection).
-from textual.widgets import DataTable
-
-# `Widget` is the base class for all Textual widgets. You subclass it to build
-# custom widgets with their own rendering logic.
-from textual.widget import Widget
+# `Horizontal` is a container that lays out its children side by side.
+from textual.containers import Horizontal
 
 # `Strip` is a low-level concept in Textual: a single rendered line of the terminal,
 # made up of styled `Segment` objects.
 from textual.strip import Strip
 
-# Rich library types for terminal styling.
-from rich.segment import Segment   # a piece of text with an optional style
-from rich.style import Style       # foreground/background color, bold, italic, etc.
-from rich.text import Text         # a string that carries per-character styles
+# `Widget` is the base class for all Textual widgets. You subclass it to build
+# custom widgets with their own rendering logic.
+from textual.widget import Widget
 
-from portfolio.core.models import FixedIncomePosition, PortfolioSnapshot
+# `DataTable` is a built-in Textual widget that displays rows and columns with
+# keyboard navigation (arrow keys, cursor highlighting, selection).
+from textual.widgets import DataTable, Static
+
+from portfolio.core.models import (
+    BitcoinMetrics,
+    FixedIncomePosition,
+    PortfolioSnapshot,
+    PositionValue,
+)
 
 # Tuple of column header strings — used both here and when rebuilding the table.
-COLUMNS = ("Ticker", "Exchange", "Category", "Quantity", "Price", "Value (R$)", "24h %", "1W %")
+COLUMNS = ("Ticker", "Exchange", "Category", "Quantity", "Price", "Avg Price", "Value (R$)", "P&L %", "24h %", "1W %", "6M %", "12M %")
 
 # A module-level constant dict mapping currency codes to display symbols.
 # `dict[str, str]` is a generic type annotation: keys and values are both strings.
@@ -69,6 +95,15 @@ def _fmt_change(change_pct: float | None) -> RenderableType:
     sign = "+" if change_pct >= 0 else ""
     color = "green" if change_pct >= 0 else "red"
     return Text(f"{sign}{change_pct:.2f}%", style=color)
+
+
+def _fmt_pnl(pnl_pct: float | None) -> RenderableType:
+    """Format unrealised P&L %; show '----' when no average price is available."""
+    if pnl_pct is None:
+        return Text("----", style="dim")
+    sign = "+" if pnl_pct >= 0 else ""
+    color = "green" if pnl_pct >= 0 else "red"
+    return Text(f"{sign}{pnl_pct:.2f}%", style=color)
 
 
 # Okabe-Ito palette — colorblind-safe for deuteranopia, protanopia, tritanopia.
@@ -230,6 +265,227 @@ class PieChart(Widget):
         return Strip(segments).adjust_cell_length(w)
 
 
+def _fear_greed_style(value: int) -> str:
+    """Map a 0–100 Fear & Greed score to a Rich color style string."""
+    if value <= 24:
+        return "bold red"
+    if value <= 44:
+        return "bold dark_orange"
+    if value <= 55:
+        return "bold yellow"
+    if value <= 74:
+        return "bold green"
+    return "bold bright_green"
+
+
+def _funding_rate_style(rate: float) -> str:
+    """Map a funding rate percentage to a Rich color style.
+
+    Positive = longs paying (crowded/bullish bias) → orange/red.
+    Negative = shorts paying (bearish bias) → green.
+    Near-zero = neutral → yellow.
+    """
+    if rate > 0.05:
+        return "bold red"
+    if rate < -0.01:
+        return "bold green"
+    return "bold yellow"
+
+
+def _mvrv_style(ratio: float) -> str:
+    """Map MVRV ratio to a Rich color style.
+
+    Historically: < 1 = undervalued, 1–2.4 = fair, 2.4–3.5 = overvalued, > 3.5 = top zone.
+    """
+    if ratio < 1.0:
+        return "bold bright_green"
+    if ratio < 2.4:
+        return "bold yellow"
+    if ratio < 3.5:
+        return "bold dark_orange"
+    return "bold red"
+
+
+def _mvrv_label(ratio: float) -> str:
+    """Return a human-readable zone label for the current MVRV ratio."""
+    if ratio < 1.0:
+        return "Undervalued"
+    if ratio < 2.4:
+        return "Fair Value"
+    if ratio < 3.5:
+        return "Overvalued"
+    return "Extreme"
+
+
+def _mayers_style(multiple: float) -> str:
+    """Map Mayer's Multiple to a Rich color style.
+
+    Mayer's original thresholds: accumulate below 0.8, caution above 2.4.
+    """
+    if multiple < 0.8:
+        return "bold bright_green"
+    if multiple < 1.0:
+        return "bold green"
+    if multiple < 2.4:
+        return "bold yellow"
+    return "bold red"
+
+
+class MetricCard(Static):
+    """A bordered card displaying one metric: a title, a main value, and a subtitle.
+
+    `Static` is a built-in Textual widget that renders a Rich-markup string.
+    We subclass it and add a helper method so callers never need to build
+    the markup string themselves.
+    """
+
+    DEFAULT_CSS = """
+    MetricCard {
+        width: 1fr;
+        height: 100%;
+        border: solid $primary;
+        padding: 2 3;
+        margin: 0 1;
+        text-align: center;
+        content-align: center middle;
+    }
+    """
+
+    def set_metric(
+        self,
+        title: str,
+        value: str,
+        subtitle: str = "",
+        value_style: str = "bold",
+    ) -> None:
+        """Re-render the card with new content.
+
+        Rich markup uses `[style]text[/style]` tags, like HTML for the terminal.
+        `[dim]` makes text appear faded; color names like `[green]` set the color.
+        `\\n` is a newline character — it adds blank lines for visual breathing room.
+        """
+        lines = [f"[dim]{title}[/dim]", "", f"[{value_style}]{value}[/{value_style}]"]
+        if subtitle:
+            lines += ["", f"[dim]{subtitle}[/dim]"]
+        self.update("\n".join(lines))
+
+
+class BitcoinMetricsPanel(Widget):
+    """Tab panel showing 5 Bitcoin metric cards in two rows (3 + 2)."""
+
+    DEFAULT_CSS = """
+    BitcoinMetricsPanel {
+        height: 1fr;
+        layout: vertical;
+        padding: 1 2;
+    }
+
+    #btc-row1, #btc-row2 {
+        height: 1fr;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        """Two `Horizontal` rows of cards.
+
+        `with Horizontal(...)` is a context manager: the widgets yielded inside
+        the `with` block become children of that Horizontal container. This is
+        how Textual builds widget trees inside `compose()`.
+        """
+        with Horizontal(id="btc-row1"):
+            yield MetricCard(id="card-fear-greed")
+            yield MetricCard(id="card-halving")
+            yield MetricCard(id="card-funding")
+        with Horizontal(id="btc-row2"):
+            yield MetricCard(id="card-btc-price")
+            yield MetricCard(id="card-mvrv")
+            yield MetricCard(id="card-mayers")
+
+    def on_mount(self) -> None:
+        """Show placeholder text while waiting for the first data fetch."""
+        self.query_one("#card-fear-greed", MetricCard).set_metric(
+            "FEAR & GREED INDEX", "Loading…"
+        )
+        self.query_one("#card-halving", MetricCard).set_metric(
+            "NEXT HALVING", "Loading…"
+        )
+        self.query_one("#card-funding", MetricCard).set_metric(
+            "FUNDING RATE (8H)", "Loading…", "Binance BTCUSDT Perp"
+        )
+        self.query_one("#card-btc-price", MetricCard).set_metric(
+            "BTC PRICE", "Loading…", "USD"
+        )
+        self.query_one("#card-mvrv", MetricCard).set_metric(
+            "MVRV RATIO", "Loading…", "Market Value / Realized Value"
+        )
+        self.query_one("#card-mayers", MetricCard).set_metric(
+            "MAYER'S MULTIPLE", "Loading…", "Price / 200-Day MA"
+        )
+
+    def update_metrics(self, metrics: BitcoinMetrics) -> None:
+        """Push a fresh BitcoinMetrics snapshot into each card."""
+        if metrics.fear_greed_value is not None:
+            value = metrics.fear_greed_value
+            label = metrics.fear_greed_label or ""
+            self.query_one("#card-fear-greed", MetricCard).set_metric(
+                "FEAR & GREED INDEX",
+                str(value),
+                label,
+                _fear_greed_style(value),
+            )
+
+        if metrics.halving_blocks_remaining is not None:
+            est = metrics.halving_estimated_date
+            subtitle = est.strftime("~%b %Y") if est is not None else ""
+            self.query_one("#card-halving", MetricCard).set_metric(
+                "NEXT HALVING",
+                f"{metrics.halving_blocks_remaining:,} blocks",
+                subtitle,
+                "bold cyan",
+            )
+
+        if metrics.funding_rate is not None:
+            rate = metrics.funding_rate
+            sign = "+" if rate >= 0 else ""
+            self.query_one("#card-funding", MetricCard).set_metric(
+                "FUNDING RATE (8H)",
+                f"{sign}{rate:.4f}%",
+                "Binance BTCUSDT Perp",
+                _funding_rate_style(rate),
+            )
+
+        if metrics.btc_price_usd is not None:
+            self.query_one("#card-btc-price", MetricCard).set_metric(
+                "BTC PRICE",
+                f"${metrics.btc_price_usd:,.0f}",
+                "USD",
+                "bold yellow",
+            )
+
+        if metrics.mvrv_ratio is not None:
+            ratio = metrics.mvrv_ratio
+            self.query_one("#card-mvrv", MetricCard).set_metric(
+                "MVRV RATIO",
+                f"{ratio:.2f}",
+                _mvrv_label(ratio),
+                _mvrv_style(ratio),
+            )
+
+        if metrics.mayers_multiple is not None:
+            multiple = metrics.mayers_multiple
+            # Show the 200DMA as subtitle so readers can see the reference price.
+            if metrics.mayers_ma200 is not None:
+                subtitle = f"200D MA: ${metrics.mayers_ma200:,.0f}"
+            else:
+                subtitle = "Price / 200-Day MA"
+            self.query_one("#card-mayers", MetricCard).set_metric(
+                "MAYER'S MULTIPLE",
+                f"{multiple:.2f}×",
+                subtitle,
+                _mayers_style(multiple),
+            )
+
+
 def _fmt_range(low: float | None, high: float | None, currency: str) -> tuple[RenderableType, RenderableType]:
     """Return (low_text, high_text) formatted in native currency, dim styled."""
     dim = "dim"
@@ -254,6 +510,20 @@ class PortfolioTable(DataTable):  # type: ignore[type-arg]
         self._expanded_ticker: str | None = None   # which row (if any) is expanded
         self._last_snapshot: PortfolioSnapshot | None = None
         self._hide_values: bool = False
+        self._sort_key: str = "pnl"
+
+    def _sorted(self, positions: list[PositionValue]) -> list[PositionValue]:
+        """Sort positions according to the active sort key."""
+        if self._sort_key == "name":
+            return sorted(positions, key=lambda pv: pv.ticker)
+        if self._sort_key == "value":
+            return sorted(positions, key=lambda pv: pv.value_brl, reverse=True)
+        if self._sort_key == "24h":
+            return sorted(positions, key=lambda pv: pv.change_pct if pv.change_pct is not None else float("-inf"), reverse=True)
+        if self._sort_key == "1w":
+            return sorted(positions, key=lambda pv: pv.change_pct_1w if pv.change_pct_1w is not None else float("-inf"), reverse=True)
+        # default: "pnl"
+        return sorted(positions, key=lambda pv: pv.pnl_pct if pv.pnl_pct is not None else float("-inf"), reverse=True)
 
     def _row_index_for(self, ticker: str) -> int:
         """Return the row index of a ticker after the table has been rebuilt.
@@ -262,16 +532,8 @@ class PortfolioTable(DataTable):  # type: ignore[type-arg]
         """
         if self._last_snapshot is None:
             return 0
-        sorted_positions = sorted(
-            self._last_snapshot.positions,
-            # `key=lambda` tells `sorted` what value to compare.
-            # `float("-inf")` is negative infinity — positions without a change
-            # percentage sort to the bottom.
-            key=lambda pv: pv.change_pct if pv.change_pct is not None else float("-inf"),
-            reverse=True,
-        )
         idx = 0
-        for pv in sorted_positions:
+        for pv in self._sorted(self._last_snapshot.positions):
             if pv.ticker == ticker:
                 return idx
             idx += 1
@@ -306,7 +568,7 @@ class PortfolioTable(DataTable):  # type: ignore[type-arg]
         self.move_cursor(row=self._row_index_for(key))
 
     def update(  # type: ignore[override]
-        self, snapshot: PortfolioSnapshot, hide_values: bool = False
+        self, snapshot: PortfolioSnapshot, hide_values: bool = False, sort_key: str = "pnl"
     ) -> None:
         """Rebuild the table from a new snapshot.
 
@@ -315,17 +577,13 @@ class PortfolioTable(DataTable):  # type: ignore[type-arg]
         """
         self._last_snapshot = snapshot
         self._hide_values = hide_values
+        self._sort_key = sort_key
 
         # Remember the cursor position so we can restore it after rebuilding.
         saved_row = self.cursor_row if self.row_count > 0 else None
         self.clear()
 
-        # Sort by 24h change descending — best performers appear at the top.
-        sorted_positions = sorted(
-            snapshot.positions,
-            key=lambda pv: pv.change_pct if pv.change_pct is not None else float("-inf"),
-            reverse=True,
-        )
+        sorted_positions = self._sorted(snapshot.positions)
 
         masked = "-----"   # shown in place of sensitive numbers when hide_values is True
         dim = "dim"
@@ -337,10 +595,14 @@ class PortfolioTable(DataTable):  # type: ignore[type-arg]
                 _fmt_exchange(pv.exchange, pv.market_open),
                 pv.category,
                 masked if hide_values else _fmt_quantity(pv.quantity, pv.category),
-                _fmt_price(pv.price, pv.native_currency),
+                _fmt_price(pv.value_brl / pv.quantity, "BRL") if pv.category.lower() == "crypto" else _fmt_price(pv.price, pv.native_currency),
+                Text(_fmt_price(pv.avg_price_native, "BRL" if pv.category.lower() == "crypto" else pv.native_currency), style="dim") if pv.avg_price_native is not None else Text("----", style="dim"),
                 masked if hide_values else f"R${pv.value_brl:,.2f}",
+                _fmt_pnl(pv.pnl_pct),
                 _fmt_change(pv.change_pct),
                 _fmt_change(pv.change_pct_1w),
+                _fmt_change(pv.change_pct_6m),
+                _fmt_change(pv.change_pct_12m),
                 key=pv.ticker,   # unique key used for cursor restoration and expand/collapse
             )
 
@@ -354,7 +616,7 @@ class PortfolioTable(DataTable):  # type: ignore[type-arg]
                     empty, empty,
                     Text("Low", style=dim), low_day,
                     Text("High", style=dim), high_day,
-                    empty,
+                    empty, empty, empty, empty, empty,
                     key=f"{pv.ticker}::day",
                 )
                 self.add_row(
@@ -362,7 +624,7 @@ class PortfolioTable(DataTable):  # type: ignore[type-arg]
                     empty, empty,
                     Text("Low", style=dim), low_52w,
                     Text("High", style=dim), high_52w,
-                    empty,
+                    empty, empty, empty, empty, empty,
                     key=f"{pv.ticker}::52w",
                 )
 

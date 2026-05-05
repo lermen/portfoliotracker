@@ -1,35 +1,63 @@
+/* portfolio.tcss — Textual CSS (TCSS) stylesheet for the Portfolio Tracker TUI.
+ *
+ * TCSS is Textual's styling language. It looks and works like a simplified version
+ * of CSS (the language used to style web pages), but targets terminal characters
+ * instead of browser pixels.
+ *
+ * Key concepts:
+ *   Selectors — target widgets by type name (e.g. `Screen`) or id (e.g. `#total`).
+ *               An `#id` selector targets one specific widget; a type selector like
+ *               `PortfolioTable` targets every widget of that type.
+ *   Properties — set layout, size, color, borders, padding, etc.
+ *   `1fr`       — "1 fraction unit". Think of it like "take all remaining space".
+ *                 `height: 1fr` means "fill all the vertical space left over after
+ *                 other widgets with fixed heights have been placed".
+ *   `$primary`  — a Textual CSS variable. Textual's default theme defines colors
+ *                 like `$primary`, `$surface`, `$success`, and `$text` so you can
+ *                 change the whole color scheme by switching themes.
+ */
+
+/* The `Screen` is the root container — the full terminal window.
+ * `layout: vertical` stacks its children top-to-bottom (the default for Screen). */
 Screen {
     layout: vertical;
 }
 
+/* `#header` targets the widget with id="header". The id is set in compose() with
+ * `Header(id="header")` — or Textual sets it automatically for the built-in Header.
+ * Height in character rows; background/color reference theme variables. */
 #header {
     height: 3;
     background: $primary;
     color: $text;
-    content-align: center middle;
+    content-align: center middle;   /* center text both horizontally and vertically */
     text-style: bold;
 }
 
+/* The total/status bar at the bottom of the screen (above the Footer). */
 #total {
     height: 3;
     background: $surface;
-    color: $success;
+    color: $success;                /* $success is green in Textual's default theme */
     content-align: center middle;
     text-style: bold;
-    border-top: solid $primary;
+    border-top: solid $primary;    /* a 1-character-tall solid line above the bar */
 }
 
-/* TabbedContent fills all remaining vertical space between the header and total bar. */
+/* `TabbedContent` fills all remaining vertical space between the header and total bar.
+ * `1fr` means "take all available space not claimed by fixed-height siblings". */
 TabbedContent {
     height: 1fr;
 }
 
-/* TabPane must also stretch to fill the tab content area. */
+/* TabPane is the content area below the tab bar. It must also stretch to fill
+ * the space that TabbedContent gives it. `padding: 0` removes default inner spacing. */
 TabPane {
     height: 1fr;
     padding: 0;
 }
 
+/* Each widget inside a TabPane fills its tab's full height. */
 PortfolioTable {
     height: 1fr;
 }
@@ -46,10 +74,17 @@ PieChart {
     height: 1fr;
 }
 
+BitcoinMetricsPanel {
+    height: 1fr;
+}
+
+/* The Footer widget is built into Textual; it shows keyboard bindings from BINDINGS.
+ * `$primary-darken-2` is a shade two steps darker than $primary — Textual generates
+ * these automatically from the base color. */
 #footer {
     height: 1;
     background: $primary-darken-2;
     color: $text-muted;
     content-align: right middle;
-    padding: 0 1;
+    padding: 0 1;    /* 0 top/bottom, 1 char left/right */
 }
