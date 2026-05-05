@@ -265,6 +265,40 @@ class PieChart(Widget):
         return Strip(segments).adjust_cell_length(w)
 
 
+_CARD_DESCRIPTIONS: dict[str, str] = {
+    "card-fear-greed": (
+        "Measures market sentiment on a 0–100 scale.\n"
+        "Low = fear (historically a buy signal).\n"
+        "High = greed (market may be overheated)."
+    ),
+    "card-halving": (
+        "Block reward halves every ~210,000 blocks\n"
+        "(~4 years), permanently cutting new supply.\n"
+        "Historically precedes major bull runs."
+    ),
+    "card-funding": (
+        "Cost paid between longs & shorts on Binance\n"
+        "perp futures every 8 h. Positive = bullish\n"
+        "crowding. Negative = bearish crowding."
+    ),
+    "card-btc-price": (
+        "Current price sourced from Binance daily\n"
+        "candles. Reference price for Mayer's\n"
+        "Multiple and 200-day MA calculations."
+    ),
+    "card-mvrv": (
+        "Market cap ÷ realized cap (aggregate cost\n"
+        "basis of all holders). Below 1 = undervalued.\n"
+        "Above 3.5 = historically near cycle tops."
+    ),
+    "card-mayers": (
+        "Price ÷ 200-day moving average. Below 0.8 =\n"
+        "Mayer's accumulation zone. Above 2.4 =\n"
+        "historically overheated territory."
+    ),
+}
+
+
 def _fear_greed_style(value: int) -> str:
     """Map a 0–100 Fear & Greed score to a Rich color style string."""
     if value <= 24:
@@ -357,6 +391,7 @@ class MetricCard(Static):
         value: str,
         subtitle: str = "",
         value_style: str = "bold",
+        description: str = "",
     ) -> None:
         """Re-render the card with new content.
 
@@ -367,6 +402,8 @@ class MetricCard(Static):
         lines = [f"[dim]{title}[/dim]", "", f"[{value_style}]{value}[/{value_style}]"]
         if subtitle:
             lines += ["", f"[dim]{subtitle}[/dim]"]
+        if description:
+            lines += ["", f"[dim]{description}[/dim]"]
         self.update("\n".join(lines))
 
 
@@ -404,22 +441,28 @@ class BitcoinMetricsPanel(Widget):
     def on_mount(self) -> None:
         """Show placeholder text while waiting for the first data fetch."""
         self.query_one("#card-fear-greed", MetricCard).set_metric(
-            "FEAR & GREED INDEX", "Loading…"
+            "FEAR & GREED INDEX", "Loading…",
+            description=_CARD_DESCRIPTIONS["card-fear-greed"],
         )
         self.query_one("#card-halving", MetricCard).set_metric(
-            "NEXT HALVING", "Loading…"
+            "NEXT HALVING", "Loading…",
+            description=_CARD_DESCRIPTIONS["card-halving"],
         )
         self.query_one("#card-funding", MetricCard).set_metric(
-            "FUNDING RATE (8H)", "Loading…", "Binance BTCUSDT Perp"
+            "FUNDING RATE (8H)", "Loading…", "Binance BTCUSDT Perp",
+            description=_CARD_DESCRIPTIONS["card-funding"],
         )
         self.query_one("#card-btc-price", MetricCard).set_metric(
-            "BTC PRICE", "Loading…", "USD"
+            "BTC PRICE", "Loading…", "USD",
+            description=_CARD_DESCRIPTIONS["card-btc-price"],
         )
         self.query_one("#card-mvrv", MetricCard).set_metric(
-            "MVRV RATIO", "Loading…", "Market Value / Realized Value"
+            "MVRV RATIO", "Loading…", "Market Value / Realized Value",
+            description=_CARD_DESCRIPTIONS["card-mvrv"],
         )
         self.query_one("#card-mayers", MetricCard).set_metric(
-            "MAYER'S MULTIPLE", "Loading…", "Price / 200-Day MA"
+            "MAYER'S MULTIPLE", "Loading…", "Price / 200-Day MA",
+            description=_CARD_DESCRIPTIONS["card-mayers"],
         )
 
     def update_metrics(self, metrics: BitcoinMetrics) -> None:
@@ -432,6 +475,7 @@ class BitcoinMetricsPanel(Widget):
                 str(value),
                 label,
                 _fear_greed_style(value),
+                description=_CARD_DESCRIPTIONS["card-fear-greed"],
             )
 
         if metrics.halving_blocks_remaining is not None:
@@ -442,6 +486,7 @@ class BitcoinMetricsPanel(Widget):
                 f"{metrics.halving_blocks_remaining:,} blocks",
                 subtitle,
                 "bold cyan",
+                description=_CARD_DESCRIPTIONS["card-halving"],
             )
 
         if metrics.funding_rate is not None:
@@ -452,6 +497,7 @@ class BitcoinMetricsPanel(Widget):
                 f"{sign}{rate:.4f}%",
                 "Binance BTCUSDT Perp",
                 _funding_rate_style(rate),
+                description=_CARD_DESCRIPTIONS["card-funding"],
             )
 
         if metrics.btc_price_usd is not None:
@@ -460,6 +506,7 @@ class BitcoinMetricsPanel(Widget):
                 f"${metrics.btc_price_usd:,.0f}",
                 "USD",
                 "bold yellow",
+                description=_CARD_DESCRIPTIONS["card-btc-price"],
             )
 
         if metrics.mvrv_ratio is not None:
@@ -469,6 +516,7 @@ class BitcoinMetricsPanel(Widget):
                 f"{ratio:.2f}",
                 _mvrv_label(ratio),
                 _mvrv_style(ratio),
+                description=_CARD_DESCRIPTIONS["card-mvrv"],
             )
 
         if metrics.mayers_multiple is not None:
@@ -483,6 +531,7 @@ class BitcoinMetricsPanel(Widget):
                 f"{multiple:.2f}×",
                 subtitle,
                 _mayers_style(multiple),
+                description=_CARD_DESCRIPTIONS["card-mayers"],
             )
 
 
