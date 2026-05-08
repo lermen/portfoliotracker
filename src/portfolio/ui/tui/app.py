@@ -301,9 +301,17 @@ class PortfolioApp(App[None]):
 
         fi_total = self.snapshot.fixed_income_total
 
-        # Grand total always includes all fixed income regardless of the active filter,
-        # because fixed income doesn't have an exchange or category to filter on.
+        # `grand_total` is the full portfolio value (variable + fixed income) and is
+        # used by the Fixed Income tab so each row's percentage is computed against
+        # the whole portfolio.
         grand_total = var_total + fi_total
+
+        # `displayed_total` is what the status bar shows. When a filter is active
+        # (exchange or category != "ALL") fixed-income positions are excluded
+        # because they have no exchange/category and therefore can't match the
+        # filter — including them would contradict the user's selection.
+        filter_active = self.filter_exchange != "ALL" or self.filter_category != "ALL"
+        displayed_total = var_total if filter_active else grand_total
 
         # --- Portfolio tab ---
         # `model_copy(update={...})` creates a shallow copy of the snapshot with
@@ -365,7 +373,7 @@ class PortfolioApp(App[None]):
             )
         else:
             self.query_one("#total", Label).update(
-                f"Total: R${grand_total:,.2f}"
+                f"Total: R${displayed_total:,.2f}"
                 f"  |  24h: {_fmt_delta(var_total, var_total_24h)}"
                 f"  |  1W: {_fmt_delta(var_total, var_total_1w)}"
                 f"  |  6M: {_fmt_delta(var_total, var_total_6m)}"
