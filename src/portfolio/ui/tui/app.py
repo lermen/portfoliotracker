@@ -363,9 +363,38 @@ class PortfolioApp(App[None]):
                 return f"{sign}{pct:.2f}%"      # only show percentage in privacy mode
             return f"{sign}R${delta:,.2f} ({sign}{pct:.2f}%)"
 
+        # Total unrealised P&L % across the currently visible positions.
+        # We reconstruct each position's BRL cost basis from `value_brl` and `pnl_pct`:
+        #   pnl_pct/100 = (value_brl − cost_brl) / cost_brl  ⇒  cost_brl = value_brl / (1 + pnl_pct/100)
+        # This identity holds in both currency conventions used by the engine
+        # (native-currency avg for stocks/ETFs, BRL avg for crypto), because the
+        # engine always computes pnl_pct against a same-currency reference price.
+        # Positions with no avg price (pnl_pct is None) are skipped — they don't
+        # contribute to either side of the ratio.
+        total_cost_brl = 0.0
+        total_value_with_cost = 0.0
+        for pv in positions:
+            if pv.pnl_pct is None:
+                continue
+            cost = pv.value_brl / (1.0 + pv.pnl_pct / 100.0)
+            total_cost_brl += cost
+            total_value_with_cost += pv.value_brl
+        total_pnl_pct: float | None = (
+            (total_value_with_cost - total_cost_brl) / total_cost_brl * 100.0
+            if total_cost_brl > 0
+            else None
+        )
+
+        def _fmt_total_pnl(pnl: float | None) -> str:
+            if pnl is None:
+                return "P&L: N/A"
+            sign = "+" if pnl >= 0 else ""
+            return f"P&L: {sign}{pnl:.2f}%"
+
         if self.hide_values:
             self.query_one("#total", Label).update(
-                f"24h: {_fmt_delta(var_total, var_total_24h)}"
+                f"{_fmt_total_pnl(total_pnl_pct)}"
+                f"  |  24h: {_fmt_delta(var_total, var_total_24h)}"
                 f"  |  1W: {_fmt_delta(var_total, var_total_1w)}"
                 f"  |  6M: {_fmt_delta(var_total, var_total_6m)}"
                 f"  |  12M: {_fmt_delta(var_total, var_total_12m)}"
@@ -374,6 +403,7 @@ class PortfolioApp(App[None]):
         else:
             self.query_one("#total", Label).update(
                 f"Total: R${displayed_total:,.2f}"
+                f"  |  {_fmt_total_pnl(total_pnl_pct)}"
                 f"  |  24h: {_fmt_delta(var_total, var_total_24h)}"
                 f"  |  1W: {_fmt_delta(var_total, var_total_1w)}"
                 f"  |  6M: {_fmt_delta(var_total, var_total_6m)}"
