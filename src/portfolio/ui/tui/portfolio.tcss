@@ -78,6 +78,72 @@ BitcoinMetricsPanel {
     height: 1fr;
 }
 
+/* ---------- Summary tab --------------------------------------------------- */
+/* The summary tab is built from several stacked rows (see SummaryPanel). Each
+ * row gets its own fixed or fractional height so the layout stays predictable
+ * regardless of terminal size. */
+
+SummaryPanel {
+    height: 1fr;
+}
+
+#summary-hero {
+    height: 9;        /* tall enough to fit title + value + subtitle comfortably */
+}
+
+#summary-perf {
+    height: 7;
+}
+
+#summary-mid {
+    height: 1fr;      /* expand to fill whatever vertical space is left */
+}
+
+#summary-movers {
+    width: 1fr;
+    layout: vertical;
+}
+
+#sum-alloc {
+    width: 1fr;
+    border: solid $primary;
+    padding: 1 2;
+    margin: 0 1;
+}
+
+#sum-gainers, #sum-losers {
+    height: 1fr;
+    border: solid $primary;
+    padding: 0 2;
+    margin: 0 1;
+}
+
+#sum-largest {
+    height: 5;
+    border: solid $primary;
+    padding: 0 2;
+    margin: 0 1;
+}
+
+#sum-btc {
+    height: 3;
+    border: solid $primary;
+    padding: 0 2;
+    margin: 0 1;
+    content-align: center middle;
+}
+
+/* Hero cards: bigger padding so the headline number has room to breathe. */
+.summary-hero-card {
+    padding: 1 2;
+}
+
+/* Compact metric cards in the performance row: tighter padding than the
+ * defaults inherited from MetricCard's DEFAULT_CSS. */
+.summary-metric-card {
+    padding: 0 1;
+}
+
 /* The Footer widget is built into Textual; it shows keyboard bindings from BINDINGS.
  * `$primary-darken-2` is a shade two steps darker than $primary — Textual generates
  * these automatically from the base color. */

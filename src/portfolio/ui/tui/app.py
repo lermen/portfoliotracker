@@ -39,6 +39,7 @@ from portfolio.ui.tui.widgets import (
     FixedIncomeTable,
     PieChart,
     PortfolioTable,
+    SummaryPanel,
 )
 
 
@@ -98,9 +99,10 @@ class PortfolioApp(App[None]):
     filter_exchange: reactive[str] = reactive("ALL")
     filter_category: reactive[str] = reactive("ALL")
 
-    # `reactive[bool]` with initial value `False`. Toggled by pressing 'h'.
-    # When True, the table shows "-----" instead of real numbers for privacy.
-    hide_values: reactive[bool] = reactive(False)
+    # `reactive[bool]` with initial value `True` — the app starts in privacy
+    # mode so opening the TUI in a shared screen never reveals balances. The
+    # user toggles it off with 'h' once they're ready to see the numbers.
+    hide_values: reactive[bool] = reactive(True)
 
     sort_key: reactive[str] = reactive("pnl")   # which column to sort the portfolio table by
 
@@ -139,6 +141,8 @@ class PortfolioApp(App[None]):
         # Each `TabPane` gets a label (shown in the tab) and an id (used to
         # query or activate it programmatically).
         with TabbedContent(id="tabs"):
+            with TabPane("Summary", id="tab-summary"):
+                yield SummaryPanel(id="summary")
             with TabPane("Portfolio", id="tab-portfolio"):
                 yield PortfolioTable(id="table")
             with TabPane("Fixed Income", id="tab-fixed-income"):
@@ -313,6 +317,13 @@ class PortfolioApp(App[None]):
         filter_active = self.filter_exchange != "ALL" or self.filter_category != "ALL"
         displayed_total = var_total if filter_active else grand_total
 
+        # --- Summary tab ---
+        # The summary always shows the unfiltered portfolio: it's the
+        # "everything at a glance" view, so applying exchange/category filters
+        # here would confuse the totals it displays. The Portfolio table below
+        # is the only widget that respects the active filters.
+        self.query_one(SummaryPanel).update(self.snapshot, hide_values=self.hide_values)
+
         # --- Portfolio tab ---
         # `model_copy(update={...})` creates a shallow copy of the snapshot with
         # specific fields replaced. This is a Pydantic feature that keeps the
@@ -450,3 +461,6 @@ class PortfolioApp(App[None]):
         if metrics is None:
             return
         self.query_one(BitcoinMetricsPanel).update_metrics(metrics)
+        # The Summary tab shows a condensed Bitcoin strip; refresh it on the
+        # same cadence as the dedicated Bitcoin tab so both stay in sync.
+        self.query_one(SummaryPanel).update_bitcoin(metrics)

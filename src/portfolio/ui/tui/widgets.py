@@ -17,6 +17,7 @@
 # separation rule enforced throughout the project.
 
 import math
+from collections import defaultdict
 from typing import Any
 
 # Rich library types for terminal styling.
@@ -29,7 +30,8 @@ from rich.text import Text  # a string that carries per-character styles
 from textual.app import ComposeResult, RenderableType
 
 # `Horizontal` is a container that lays out its children side by side.
-from textual.containers import Horizontal
+# `Vertical` stacks its children top-to-bottom, mirroring the default Screen layout.
+from textual.containers import Horizontal, Vertical
 
 # `Strip` is a low-level concept in Textual: a single rendered line of the terminal,
 # made up of styled `Segment` objects.
@@ -723,3 +725,373 @@ class FixedIncomeTable(DataTable):  # type: ignore[type-arg]
 
         if saved_row is not None:
             self.move_cursor(row=min(saved_row, self.row_count - 1))
+
+
+# ---------------------------------------------------------------------------
+# Summary tab
+# ---------------------------------------------------------------------------
+#
+# The Summary panel is a composite widget — a single Textual widget made of
+# many smaller widgets arranged in rows. It gives the user an "at a glance"
+# view of the whole portfolio without needing to scan the full table.
+#
+# Layout (top to bottom):
+#   1. Hero row     — three large cards: total value, total P&L, day change
+#   2. Performance  — four compact cards: 24h / 1W / 6M / 12M deltas
+#   3. Middle row   — allocation bars (left)  +  top gainers/losers (right)
+#   4. Largest band — top positions by value, one row
+#   5. Bitcoin strip— compact Bitcoin context (F&G, price, MVRV, Mayer's)
+
+
+# `_compact_brl`: helper that formats a BRL amount in a space-saving way for
+# subtitles where the full "R$123,456.78" would be too long. Numbers ≥ 1 million
+# are shown in millions ("R$1.2M"); numbers ≥ 1 thousand are shown in thousands
+# ("R$328k"); smaller numbers are shown with no decimals ("R$540").
+def _compact_brl(value: float) -> str:
+    if abs(value) >= 1_000_000:
+        return f"R${value / 1_000_000:.1f}M"
+    if abs(value) >= 1_000:
+        return f"R${value / 1_000:.0f}k"
+    return f"R${value:.0f}"
+
+
+def _delta_style(delta: float) -> str:
+    """Rich style string for a positive (green) or negative (red) delta."""
+    return "bold green" if delta >= 0 else "bold red"
+
+
+def _bar(pct: float, width: int = 12) -> str:
+    """Render a horizontal bar of `width` characters representing a 0–100% value.
+
+    `█` is a filled cell; `░` is an empty cell. `int()` truncates toward zero,
+    so 8.7% × 12 → 1 filled cell. We clamp so the bar never overflows.
+    """
+    filled = max(0, min(width, int(round(pct / 100 * width))))
+    return "█" * filled + "░" * (width - filled)
+
+
+class SummaryPanel(Widget):
+    """Compose all summary sections into a single tab-fillable widget.
+
+    The panel owns the *layout*; the data rendering happens in `update()`
+    (portfolio data) and `update_bitcoin()` (BTC metrics). Each method writes
+    directly into the matching sub-widget via `query_one`. The panel keeps no
+    derived state of its own beyond what the children already display.
+    """
+
+    # `DEFAULT_CSS` here only sets the panel-level layout. The actual sizing of
+    # each section (hero / perf / mid / etc.) is defined in `portfolio.tcss`
+    # alongside the rest of the project's styles so the whole layout is
+    # configurable in one place.
+    DEFAULT_CSS = """
+    SummaryPanel {
+        height: 1fr;
+        layout: vertical;
+        padding: 1 2;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        """Build the widget tree for the summary tab.
+
+        Each `Horizontal` / `Vertical` block becomes a row/column container.
+        Cards (`MetricCard`) and panels (`Static`) inside are children of the
+        surrounding container, so they share its width/height budget.
+        """
+        # --- Row 1: hero cards (total / P&L / day) ---
+        with Horizontal(id="summary-hero"):
+            yield MetricCard(id="sum-total", classes="summary-hero-card")
+            yield MetricCard(id="sum-pnl", classes="summary-hero-card")
+            yield MetricCard(id="sum-day", classes="summary-hero-card")
+
+        # --- Row 2: performance strip (24h / 1W / 6M / 12M) ---
+        with Horizontal(id="summary-perf"):
+            yield MetricCard(id="sum-24h", classes="summary-metric-card")
+            yield MetricCard(id="sum-1w", classes="summary-metric-card")
+            yield MetricCard(id="sum-6m", classes="summary-metric-card")
+            yield MetricCard(id="sum-12m", classes="summary-metric-card")
+
+        # --- Row 3: allocation + top movers ---
+        with Horizontal(id="summary-mid"):
+            yield Static(id="sum-alloc", classes="summary-block")
+            # `Vertical` stacks the gainers panel above the losers panel.
+            with Vertical(id="summary-movers"):
+                yield Static(id="sum-gainers", classes="summary-block")
+                yield Static(id="sum-losers", classes="summary-block")
+
+        # --- Row 4: largest positions band ---
+        yield Static(id="sum-largest", classes="summary-block")
+
+        # --- Row 5: Bitcoin context strip ---
+        yield Static(id="sum-btc", classes="summary-block")
+
+    def on_mount(self) -> None:
+        """Show placeholders before the first snapshot arrives.
+
+        Without this, the cards render as empty bordered boxes which can look
+        broken on first display. The placeholders match what the user sees on
+        the Bitcoin tab during loading.
+        """
+        for card_id, title, subtitle in (
+            ("sum-total", "TOTAL PORTFOLIO", ""),
+            ("sum-pnl", "TOTAL P&L", ""),
+            ("sum-day", "DAY CHANGE", ""),
+        ):
+            card = self.query_one(f"#{card_id}", MetricCard)
+            card.set_metric(title, "Loading…", subtitle)
+
+        for card_id, title in (
+            ("sum-24h", "24H"),
+            ("sum-1w", "1W"),
+            ("sum-6m", "6M"),
+            ("sum-12m", "12M"),
+        ):
+            self.query_one(f"#{card_id}", MetricCard).set_metric(title, "—")
+
+        self.query_one("#sum-alloc", Static).update("Allocation: loading…")
+        self.query_one("#sum-gainers", Static).update("Top gainers: loading…")
+        self.query_one("#sum-losers", Static).update("Top losers: loading…")
+        self.query_one("#sum-largest", Static).update("Largest positions: loading…")
+        self.query_one("#sum-btc", Static).update("Bitcoin context: loading…")
+
+    # ----- Portfolio data update ---------------------------------------------
+
+    def update(  # type: ignore[override]
+        self,
+        snapshot: PortfolioSnapshot,
+        hide_values: bool = False,
+    ) -> None:
+        """Refresh all portfolio-derived sections from a new snapshot.
+
+        The Bitcoin strip is NOT touched here — it is owned by `update_bitcoin`
+        because BTC metrics arrive on their own cadence (every ~5 minutes) and
+        we don't want to overwrite a fresh BTC reading with stale data from a
+        portfolio refresh.
+        """
+        positions = snapshot.positions
+        var_total = snapshot.total_value
+        fi_total = snapshot.fixed_income_total
+        grand_total = var_total + fi_total
+
+        # `masked` is what we show in place of sensitive numbers when the user
+        # has toggled "hide values". Percentages are kept visible because they
+        # don't leak the actual size of the portfolio.
+        masked = "-----"
+
+        # --- Hero: total portfolio value -------------------------------------
+        var_pct = (var_total / grand_total * 100) if grand_total > 0 else 0.0
+        fi_pct = (fi_total / grand_total * 100) if grand_total > 0 else 0.0
+        total_value_str = masked if hide_values else f"R$ {grand_total:,.2f}"
+        if hide_values:
+            split_str = f"Var {var_pct:.0f}% · FI {fi_pct:.0f}%"
+        else:
+            split_str = (
+                f"Var {_compact_brl(var_total)} · FI {_compact_brl(fi_total)}  "
+                f"({var_pct:.0f}% / {fi_pct:.0f}%)"
+            )
+        self.query_one("#sum-total", MetricCard).set_metric(
+            "TOTAL PORTFOLIO", total_value_str, split_str, "bold",
+        )
+
+        # --- Hero: total unrealised P&L --------------------------------------
+        # Reconstruct each position's cost basis from its current value and
+        # pnl_pct, the same identity the status bar uses:
+        #     cost = value / (1 + pnl_pct / 100)
+        # Positions without an avg price (pnl_pct is None) are skipped.
+        total_cost_brl = 0.0
+        total_value_with_cost = 0.0
+        for pv in positions:
+            if pv.pnl_pct is None:
+                continue
+            total_cost_brl += pv.value_brl / (1.0 + pv.pnl_pct / 100.0)
+            total_value_with_cost += pv.value_brl
+
+        if total_cost_brl > 0:
+            pnl_abs = total_value_with_cost - total_cost_brl
+            pnl_pct: float | None = pnl_abs / total_cost_brl * 100.0
+            sign = "+" if pnl_abs >= 0 else ""
+            pnl_value_str = masked if hide_values else f"{sign}R$ {pnl_abs:,.2f}"
+            pnl_subtitle = f"{sign}{pnl_pct:.2f}%"
+            pnl_style = _delta_style(pnl_abs)
+        else:
+            pnl_value_str = "N/A"
+            pnl_subtitle = ""
+            pnl_pct = None
+            pnl_style = "bold"
+        self.query_one("#sum-pnl", MetricCard).set_metric(
+            "TOTAL P&L", pnl_value_str, pnl_subtitle, pnl_style,
+        )
+
+        # --- Hero: 24h day change --------------------------------------------
+        # `snapshot.total_value_24h` is the engine-supplied estimate of the
+        # portfolio value yesterday. Compare to today's variable total because
+        # fixed income has no daily change.
+        prev_24h = snapshot.total_value_24h
+        if prev_24h is not None and prev_24h > 0:
+            day_abs = var_total - prev_24h
+            day_pct = day_abs / prev_24h * 100.0
+            sign = "+" if day_abs >= 0 else ""
+            day_value_str = masked if hide_values else f"{sign}R$ {day_abs:,.2f}"
+            day_subtitle = f"{sign}{day_pct:.2f}%"
+            day_style = _delta_style(day_abs)
+        else:
+            day_value_str = "N/A"
+            day_subtitle = ""
+            day_style = "bold"
+        self.query_one("#sum-day", MetricCard).set_metric(
+            "DAY CHANGE", day_value_str, day_subtitle, day_style,
+        )
+
+        # --- Performance strip: 24h / 1W / 6M / 12M --------------------------
+        # Each card shows a percentage change vs. the corresponding past total.
+        # The absolute R$ delta is the subtitle (hidden in privacy mode).
+        for card_id, label, prev in (
+            ("sum-24h", "24H", snapshot.total_value_24h),
+            ("sum-1w", "1W", snapshot.total_value_1w),
+            ("sum-6m", "6M", snapshot.total_value_6m),
+            ("sum-12m", "12M", snapshot.total_value_12m),
+        ):
+            if prev is not None and prev > 0:
+                delta = var_total - prev
+                pct = delta / prev * 100.0
+                sign = "+" if delta >= 0 else ""
+                value_str = f"{sign}{pct:.2f}%"
+                subtitle = "" if hide_values else f"{sign}R$ {delta:,.0f}"
+                style = _delta_style(delta)
+            else:
+                value_str = "—"
+                subtitle = ""
+                style = "bold"
+            self.query_one(f"#{card_id}", MetricCard).set_metric(
+                label, value_str, subtitle, style,
+            )
+
+        # --- Allocation block ------------------------------------------------
+        # Aggregate by category, add fixed income as its own bucket.
+        cat_totals: dict[str, float] = defaultdict(float)
+        for pv in positions:
+            cat_totals[pv.category or "Unknown"] += pv.value_brl
+        if fi_total > 0:
+            cat_totals["Fixed Income"] += fi_total
+
+        # `sorted(..., reverse=True)` puts the biggest slice first. We render
+        # one bar per category with right-aligned percentages so the columns
+        # line up visually.
+        items = sorted(cat_totals.items(), key=lambda kv: kv[1], reverse=True)
+        max_label = max((len(name) for name, _ in items), default=0)
+        lines = ["[bold]ALLOCATION[/bold]", ""]
+        for name, value in items:
+            pct = value / grand_total * 100 if grand_total > 0 else 0.0
+            lines.append(f"  {name:<{max_label}}  {_bar(pct)}  {pct:5.1f}%")
+        lines.append("")
+        # Footer info: position count, category count, closed-exchange tally.
+        closed = sum(1 for pv in positions if not pv.market_open)
+        n_categories = len({pv.category for pv in positions if pv.category})
+        footer = f"[dim]  {len(positions)} positions · {n_categories} categories"
+        if closed:
+            footer += f" · {closed} exchanges closed"
+        footer += "[/dim]"
+        lines.append(footer)
+        self.query_one("#sum-alloc", Static).update("\n".join(lines))
+
+        # --- Top gainers / losers (24h) --------------------------------------
+        # Filter out positions with no 24h data, then sort by change_pct.
+        with_change = [pv for pv in positions if pv.change_pct is not None]
+        # `sorted(..., reverse=True)` puts the biggest gainers first.
+        by_change = lambda pv: pv.change_pct or 0.0  # noqa: E731
+        gainers = sorted(with_change, key=by_change, reverse=True)[:3]
+        losers = sorted(with_change, key=by_change)[:3]
+
+        def _mover_line(pv: PositionValue) -> str:
+            pct = pv.change_pct or 0.0
+            sign = "+" if pct >= 0 else ""
+            color = "green" if pct >= 0 else "red"
+            # Reconstruct the 24h absolute R$ change for this position from its
+            # current value and percentage (same identity as the deltas above).
+            prev_val = pv.value_brl / (1.0 + pct / 100.0) if pct != -100 else 0.0
+            delta = pv.value_brl - prev_val
+            delta_str = f"{sign}R${delta:,.0f}" if not hide_values else ""
+            return (
+                f"  [bold]{pv.ticker:<10}[/bold] "
+                f"[{color}]{sign}{pct:5.2f}%[/{color}]  "
+                f"[{color}]{delta_str}[/{color}]"
+            )
+
+        gainer_lines = ["[bold]TOP GAINERS (24h)[/bold]"]
+        gainer_lines.extend(_mover_line(pv) for pv in gainers)
+        if not gainers:
+            gainer_lines.append("  [dim]No data[/dim]")
+        self.query_one("#sum-gainers", Static).update("\n".join(gainer_lines))
+
+        loser_lines = ["[bold]TOP LOSERS (24h)[/bold]"]
+        loser_lines.extend(_mover_line(pv) for pv in losers)
+        if not losers:
+            loser_lines.append("  [dim]No data[/dim]")
+        self.query_one("#sum-losers", Static).update("\n".join(loser_lines))
+
+        # --- Largest positions band ------------------------------------------
+        # Combine variable and fixed-income positions, sort by BRL value, take
+        # the top 4 so they fit on one screen row in two columns of two.
+        ranked: list[tuple[str, float]] = [
+            (pv.ticker, pv.value_brl) for pv in positions
+        ] + [(fi.name, fi.amount_brl) for fi in snapshot.fixed_income]
+        ranked.sort(key=lambda item: item[1], reverse=True)
+        top4 = ranked[:4]
+
+        def _largest_cell(name: str, value: float) -> str:
+            pct = value / grand_total * 100 if grand_total > 0 else 0.0
+            value_str = masked if hide_values else f"R$ {value:,.0f}"
+            return f"[bold]{name:<10}[/bold] {pct:5.1f}%  {value_str}"
+
+        largest_lines = ["[bold]LARGEST POSITIONS[/bold]"]
+        # Layout the 4 items into two side-by-side columns: pairs (0,1) and (2,3).
+        # `zip` pairs them; missing items are simply empty strings.
+        left = top4[:2]
+        right = top4[2:4]
+        for i in range(max(len(left), len(right))):
+            l_cell = _largest_cell(*left[i]) if i < len(left) else ""
+            r_cell = _largest_cell(*right[i]) if i < len(right) else ""
+            # Pad the left cell to ~40 chars (minus markup) so the right column
+            # lines up. Rich strips markup when measuring width, but ljust does
+            # not — we use a manual gap instead. The trailing 8 spaces are
+            # roughly the column gap.
+            largest_lines.append(f"  {l_cell}        {r_cell}")
+        self.query_one("#sum-largest", Static).update("\n".join(largest_lines))
+
+    # ----- Bitcoin strip ------------------------------------------------------
+
+    def update_bitcoin(self, metrics: BitcoinMetrics) -> None:
+        """Refresh just the Bitcoin context strip at the bottom of the summary.
+
+        Called from `app.watch_btc_snapshot`. Independent of `update()` because
+        the two data sources have different refresh cadences.
+        """
+        parts: list[str] = []
+
+        if metrics.fear_greed_value is not None:
+            label = metrics.fear_greed_label or ""
+            style = _fear_greed_style(metrics.fear_greed_value)
+            parts.append(f"F&G [{style}]{metrics.fear_greed_value} {label}[/{style}]")
+
+        if metrics.btc_price_usd is not None:
+            price = metrics.btc_price_usd
+            parts.append(f"BTC [bold yellow]${price:,.0f}[/bold yellow]")
+
+        if metrics.mvrv_ratio is not None:
+            ratio = metrics.mvrv_ratio
+            style = _mvrv_style(ratio)
+            zone = _mvrv_label(ratio)
+            parts.append(f"MVRV [{style}]{ratio:.2f} {zone}[/{style}]")
+
+        if metrics.mayers_multiple is not None:
+            multiple = metrics.mayers_multiple
+            style = _mayers_style(multiple)
+            parts.append(f"Mayer [{style}]{multiple:.2f}×[/{style}]")
+
+        if not parts:
+            text = "[dim]Bitcoin context: no data[/dim]"
+        else:
+            # Join with a centered divider — same visual rhythm as the status
+            # bar so the strip feels native to the rest of the app.
+            text = "[bold]BITCOIN CONTEXT[/bold]   " + "   │   ".join(parts)
+        self.query_one("#sum-btc", Static).update(text)
