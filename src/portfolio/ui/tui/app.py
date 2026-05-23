@@ -329,7 +329,7 @@ class PortfolioApp(App[None]):
         # specific fields replaced. This is a Pydantic feature that keeps the
         # original immutable while giving the widget a filtered view of the data.
         filtered_snapshot = self.snapshot.model_copy(
-            update={"positions": positions, "total_value": var_total}
+            update={"positions": positions}
         )
         self.query_one(PortfolioTable).update(filtered_snapshot, hide_values=self.hide_values, sort_key=self.sort_key)
 

@@ -53,7 +53,7 @@ from portfolio.core.models import (
 )
 
 # Tuple of column header strings — used both here and when rebuilding the table.
-COLUMNS = ("Ticker", "Exchange", "Category", "Quantity", "Price", "Avg Price", "Value (R$)", "P&L %", "24h %", "1W %", "6M %", "12M %")
+COLUMNS = ("Ticker", "Exchange", "Category", "Quantity", "Price", "Avg Price", "Value (R$)", "% Portfolio", "P&L %", "24h %", "1W %", "6M %", "12M %")
 
 # A module-level constant dict mapping currency codes to display symbols.
 # `dict[str, str]` is a generic type annotation: keys and values are both strings.
@@ -640,7 +640,10 @@ class PortfolioTable(DataTable):  # type: ignore[type-arg]
         dim = "dim"
         empty = Text("", style=dim)
 
+        grand_total = snapshot.total_value + snapshot.fixed_income_total
+
         for pv in sorted_positions:
+            pct_portfolio = pv.value_brl / grand_total * 100 if grand_total > 0 else 0.0
             self.add_row(
                 pv.ticker,
                 _fmt_exchange(pv.exchange, pv.market_open),
@@ -649,6 +652,7 @@ class PortfolioTable(DataTable):  # type: ignore[type-arg]
                 _fmt_price(pv.value_brl / pv.quantity, "BRL") if pv.category.lower() == "crypto" else _fmt_price(pv.price, pv.native_currency),
                 Text(_fmt_price(pv.avg_price_native, "BRL" if pv.category.lower() == "crypto" else pv.native_currency), style="dim") if pv.avg_price_native is not None else Text("----", style="dim"),
                 masked if hide_values else f"R${pv.value_brl:,.2f}",
+                f"{pct_portfolio:.1f}%",
                 _fmt_pnl(pv.pnl_pct),
                 _fmt_change(pv.change_pct),
                 _fmt_change(pv.change_pct_1w),
@@ -667,7 +671,7 @@ class PortfolioTable(DataTable):  # type: ignore[type-arg]
                     empty, empty,
                     Text("Low", style=dim), low_day,
                     Text("High", style=dim), high_day,
-                    empty, empty, empty, empty, empty,
+                    empty, empty, empty, empty, empty, empty,
                     key=f"{pv.ticker}::day",
                 )
                 self.add_row(
@@ -675,7 +679,7 @@ class PortfolioTable(DataTable):  # type: ignore[type-arg]
                     empty, empty,
                     Text("Low", style=dim), low_52w,
                     Text("High", style=dim), high_52w,
-                    empty, empty, empty, empty, empty,
+                    empty, empty, empty, empty, empty, empty,
                     key=f"{pv.ticker}::52w",
                 )
 
