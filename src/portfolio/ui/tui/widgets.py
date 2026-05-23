@@ -640,6 +640,9 @@ class PortfolioTable(DataTable):  # type: ignore[type-arg]
         dim = "dim"
         empty = Text("", style=dim)
 
+        # `snapshot.total_value` is the unfiltered portfolio total — app.py
+        # deliberately does not override it in the filtered snapshot so that
+        # "% Portfolio" always shows each position's share of the whole portfolio.
         grand_total = snapshot.total_value + snapshot.fixed_income_total
 
         for pv in sorted_positions:

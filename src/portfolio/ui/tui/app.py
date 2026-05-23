@@ -328,6 +328,9 @@ class PortfolioApp(App[None]):
         # `model_copy(update={...})` creates a shallow copy of the snapshot with
         # specific fields replaced. This is a Pydantic feature that keeps the
         # original immutable while giving the widget a filtered view of the data.
+        # `total_value` is intentionally NOT overridden here: the table uses it as
+        # the denominator for "% Portfolio", which must always reflect the full
+        # portfolio — not just the currently visible filtered subset.
         filtered_snapshot = self.snapshot.model_copy(
             update={"positions": positions}
         )
