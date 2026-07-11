@@ -144,6 +144,49 @@ SummaryPanel {
     padding: 0 1;
 }
 
+/* ---------- Edit dialogs (modal screens) ---------------------------------- */
+/* The three editing dialogs (QuantityModal, AddPositionModal, ConfirmModal) all
+ * share the same look. A `ModalScreen` covers the whole terminal with a dimmed
+ * background; `align: center middle` floats the `#dialog` box in the centre. */
+
+QuantityModal, AddPositionModal, ConfirmModal {
+    align: center middle;   /* centre the dialog box on screen */
+}
+
+/* The visible dialog box. `width: 60` is 60 character columns; `height: auto`
+ * grows to fit however many inputs the dialog contains. */
+#dialog {
+    width: 60;
+    height: auto;
+    max-height: 90%;
+    border: thick $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+#dialog-title {
+    text-style: bold;
+    width: 100%;
+    content-align: center middle;
+    padding-bottom: 1;
+}
+
+/* Inputs stretch to the full width of the dialog and get a little breathing room. */
+#dialog Input {
+    width: 100%;
+    margin-bottom: 1;
+}
+
+/* The row of action buttons at the bottom, aligned to the right. */
+#dialog-buttons {
+    height: auto;
+    align-horizontal: right;
+}
+
+#dialog-buttons Button {
+    margin-left: 2;
+}
+
 /* The Footer widget is built into Textual; it shows keyboard bindings from BINDINGS.
  * `$primary-darken-2` is a shade two steps darker than $primary — Textual generates
  * these automatically from the base color. */

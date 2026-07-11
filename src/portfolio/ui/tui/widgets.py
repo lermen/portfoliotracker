@@ -33,6 +33,10 @@ from textual.app import ComposeResult, RenderableType
 # `Vertical` stacks its children top-to-bottom, mirroring the default Screen layout.
 from textual.containers import Horizontal, Vertical
 
+# `Coordinate` is a small (row, column) value type Textual uses to address a
+# single cell in a DataTable. We use it to look up which ticker the cursor is on.
+from textual.coordinate import Coordinate
+
 # `Strip` is a low-level concept in Textual: a single rendered line of the terminal,
 # made up of styled `Segment` objects.
 from textual.strip import Strip
@@ -591,6 +595,31 @@ class PortfolioTable(DataTable):  # type: ignore[type-arg]
             if pv.ticker == self._expanded_ticker:
                 idx += 2  # account for the two detail sub-rows inserted after this ticker
         return 0
+
+    def selected_ticker(self) -> str | None:
+        """Return the ticker under the cursor, or None if there isn't a real one.
+
+        Used by the edit/delete actions in app.py. We translate the cursor's
+        (row, column) coordinate into the row *key* we assigned in `add_row`
+        (`key=pv.ticker`). Detail sub-rows use keys containing "::", so we skip
+        those — you can't edit the "Day range" helper row.
+
+        `coordinate_to_cell_key` can raise if the table is empty or the cursor is
+        out of range, so we guard with a try/except and simply report "no
+        selection" in that case.
+        """
+        if self.row_count == 0:
+            return None
+        try:
+            row_key = self.coordinate_to_cell_key(
+                Coordinate(self.cursor_row, 0)
+            ).row_key
+        except Exception:
+            return None
+        key = str(row_key.value) if row_key.value is not None else ""
+        if not key or "::" in key:
+            return None
+        return key
 
     def collapse(self) -> None:
         """Collapse any currently expanded row and keep the cursor on it."""

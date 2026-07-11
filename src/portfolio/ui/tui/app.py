@@ -18,7 +18,9 @@
 import asyncio
 from collections import defaultdict
 from pathlib import Path
-from zoneinfo import ZoneInfo   # standard library for IANA timezone support (Python 3.9+)
+from zoneinfo import (
+    ZoneInfo,  # standard library for IANA timezone support (Python 3.9+)
+)
 
 from textual.app import App, ComposeResult
 from textual.reactive import reactive
@@ -33,7 +35,15 @@ from textual.widgets import (
 
 from portfolio.core.bitcoin_fetcher import run_bitcoin_engine
 from portfolio.core.engine import run_engine
-from portfolio.core.models import BitcoinMetrics, PortfolioSnapshot, PositionValue
+from portfolio.core.models import (
+    BitcoinMetrics,
+    PortfolioSnapshot,
+    Position,
+    PositionValue,
+)
+from portfolio.core.settings import settings
+from portfolio.core.writer import add_position, remove_position, set_quantity
+from portfolio.ui.tui.modals import AddPositionModal, ConfirmModal, QuantityModal
 from portfolio.ui.tui.widgets import (
     BitcoinMetricsPanel,
     FixedIncomeTable,
@@ -86,6 +96,11 @@ class PortfolioApp(App[None]):
         ("w", "sort('1w')", "Sort 1W"),
         ("n", "sort('name')", "Sort Name"),
         ("v", "sort('value')", "Sort Value"),
+        # Editing actions use uppercase letters (Shift+key) so they don't collide
+        # with the lowercase filter/sort keys above and read as "mutating" actions.
+        ("E", "edit_quantity", "Edit qty"),
+        ("A", "add_position", "Add"),
+        ("D", "delete_position", "Delete"),
     ]
 
     # `reactive[T]` declares a reactive variable of type T.
@@ -119,6 +134,11 @@ class PortfolioApp(App[None]):
         super().__init__()
         self.queue: asyncio.Queue[PortfolioSnapshot] = asyncio.Queue()
         self.btc_queue: asyncio.Queue[BitcoinMetrics] = asyncio.Queue()
+
+        # `asyncio.Event` is a flag the UI sets after editing the spreadsheet to
+        # wake the engine immediately (see run_engine). Without it, an edit would
+        # only appear on the next scheduled refresh, up to 30 seconds later.
+        self.refresh_event: asyncio.Event = asyncio.Event()
 
     def compose(self) -> ComposeResult:
         """Declare the widget tree — what the screen is made of and how it nests.
@@ -171,8 +191,9 @@ class PortfolioApp(App[None]):
         # Hide the tab container until the first snapshot arrives (shows spinner instead).
         self.query_one("#tabs", TabbedContent).display = False
 
-        # Start the portfolio engine as a background worker.
-        self.run_worker(run_engine(self.queue), exclusive=True)
+        # Start the portfolio engine as a background worker. We pass the refresh
+        # event so in-app edits can trigger an immediate re-read of the file.
+        self.run_worker(run_engine(self.queue, self.refresh_event), exclusive=True)
 
         # Start the Bitcoin metrics engine as a separate background worker.
         # `exclusive=False` allows it to coexist with the portfolio engine worker.
@@ -265,6 +286,92 @@ class PortfolioApp(App[None]):
     def action_sort(self, key: str) -> None:
         """Change the sort order of the portfolio table."""
         self.sort_key = key
+
+    # --- editing actions ---
+    # These drive the "edit directly in the app" feature. Each one opens a modal
+    # dialog, then writes the result to the spreadsheet via `core/writer.py`.
+    # After a successful write we set `refresh_event`, which wakes the engine so
+    # the change is fetched and re-rendered within a second.
+
+    def _quantity_for(self, ticker: str) -> float | None:
+        """Look up the current quantity of a ticker in the latest snapshot."""
+        if self.snapshot is None:
+            return None
+        for pv in self.snapshot.positions:
+            if pv.ticker == ticker:
+                return pv.quantity
+        return None
+
+    def action_edit_quantity(self) -> None:
+        """Open a dialog to edit the quantity of the selected position."""
+        ticker = self.query_one(PortfolioTable).selected_ticker()
+        if ticker is None:
+            self.notify("Select a position in the Portfolio tab first", severity="warning")
+            return
+        current = self._quantity_for(ticker) or 0.0
+
+        # `push_screen(screen, callback)` shows the modal and calls `callback`
+        # with whatever the modal passes to `dismiss()`. We define the callback
+        # inline as a closure so it can capture `ticker`.
+        def on_result(quantity: float | None) -> None:
+            if quantity is None:
+                return  # user cancelled
+            self.run_worker(self._apply_set_quantity(ticker, quantity))
+
+        self.push_screen(QuantityModal(ticker, current), on_result)
+
+    def action_add_position(self) -> None:
+        """Open a dialog to add a new position."""
+        def on_result(position: Position | None) -> None:
+            if position is None:
+                return
+            self.run_worker(self._apply_add_position(position))
+
+        self.push_screen(AddPositionModal(), on_result)
+
+    def action_delete_position(self) -> None:
+        """Open a confirmation dialog, then delete the selected position."""
+        ticker = self.query_one(PortfolioTable).selected_ticker()
+        if ticker is None:
+            self.notify("Select a position in the Portfolio tab first", severity="warning")
+            return
+
+        def on_result(confirmed: bool) -> None:
+            if confirmed:
+                self.run_worker(self._apply_remove_position(ticker))
+
+        self.push_screen(ConfirmModal(f"Delete {ticker}?"), on_result)
+
+    # The `_apply_*` methods are async because the writer touches the filesystem.
+    # They run as Textual workers (background tasks) so the UI never freezes, and
+    # they translate backend exceptions into friendly toast notifications.
+
+    async def _apply_set_quantity(self, ticker: str, quantity: float) -> None:
+        try:
+            await set_quantity(settings.excel_path, ticker, quantity)
+        except Exception as exc:
+            self.notify(f"Could not update {ticker}: {exc}", severity="error")
+            return
+        self.notify(f"{ticker} quantity → {quantity:g}")
+        self.refresh_event.set()
+
+    async def _apply_add_position(self, position: Position) -> None:
+        try:
+            await add_position(settings.excel_path, position)
+        except Exception as exc:
+            self.notify(f"Could not add {position.ticker}: {exc}", severity="error")
+            return
+        self.notify(f"Added {position.ticker}")
+        self.refresh_event.set()
+
+    async def _apply_remove_position(self, ticker: str) -> None:
+        try:
+            await remove_position(settings.excel_path, ticker)
+        except Exception as exc:
+            self.notify(f"Could not delete {ticker}: {exc}", severity="error")
+            return
+        self.notify(f"Removed {ticker}")
+        self.refresh_event.set()
 
     # --- rendering ---
 

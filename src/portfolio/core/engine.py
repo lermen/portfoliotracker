@@ -21,6 +21,7 @@
 # blocks — it only `await`s async functions.
 
 import asyncio
+import contextlib
 from datetime import UTC, datetime
 
 import structlog
@@ -34,7 +35,10 @@ from portfolio.core.settings import settings
 log = structlog.get_logger()
 
 
-async def run_engine(queue: asyncio.Queue[PortfolioSnapshot]) -> None:
+async def run_engine(
+    queue: asyncio.Queue[PortfolioSnapshot],
+    refresh_event: asyncio.Event | None = None,
+) -> None:
     """Continuously refresh portfolio data and publish snapshots to the queue.
 
     This is the application's main background task. It runs forever (while True)
@@ -44,6 +48,13 @@ async def run_engine(queue: asyncio.Queue[PortfolioSnapshot]) -> None:
     `asyncio.Queue[PortfolioSnapshot]` is a type-annotated queue — the `[...]`
     tells type checkers (and human readers) exactly what type of object goes in
     and comes out. The queue is created in `app.py` and passed in here.
+
+    `refresh_event` is an optional `asyncio.Event` — a simple flag two coroutines
+    can use to signal each other. When the UI edits the spreadsheet it "sets" the
+    event, which wakes this loop early (see the interruptible sleep at the bottom)
+    so the change appears within a second instead of after the full refresh
+    interval. It is optional so existing callers/tests that don't need instant
+    refresh can keep calling `run_engine(queue)` unchanged.
 
     The function signature uses `async def` because it uses `await` internally.
     Any function with `async def` must be called with `await` (or started as a
@@ -204,8 +215,25 @@ async def run_engine(queue: asyncio.Queue[PortfolioSnapshot]) -> None:
             # so the engine never crashes entirely. The next iteration will retry.
             log.error("engine_error", error=str(exc))
 
-        # Pause before the next refresh. `await asyncio.sleep(N)` suspends this
-        # coroutine for N seconds while letting the event loop run other tasks
-        # (like UI rendering) in the meantime. Compare to `time.sleep(N)` which
-        # would freeze the entire program.
-        await asyncio.sleep(settings.refresh_interval_seconds)
+        # Pause before the next refresh — but wake up early if the UI signals an
+        # edit. `await asyncio.sleep(N)` suspends this coroutine for N seconds
+        # while letting the event loop run other tasks (like UI rendering) in the
+        # meantime. Compare to `time.sleep(N)` which would freeze the program.
+        if refresh_event is None:
+            await asyncio.sleep(settings.refresh_interval_seconds)
+        else:
+            # `asyncio.wait_for(coro, timeout)` waits for the event to be set, but
+            # gives up after `timeout` seconds by raising `TimeoutError`. So this
+            # means "sleep up to the refresh interval, OR return immediately the
+            # moment someone sets the event — whichever comes first".
+            #
+            # `contextlib.suppress(TimeoutError)` is the idiomatic way to say "run
+            # this, and if it raises TimeoutError, ignore it" — the normal case
+            # here is that the interval simply elapsed with no edit.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    refresh_event.wait(), timeout=settings.refresh_interval_seconds
+                )
+            # Clear the flag so the *next* loop iteration waits again instead of
+            # spinning. Events stay "set" until explicitly cleared.
+            refresh_event.clear()
