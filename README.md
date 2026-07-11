@@ -165,6 +165,75 @@ it re-reads the file on each refresh cycle.
 
 ---
 
+## Importing positions from a broker export (B3)
+
+Instead of editing quantities by hand, you can sync them automatically from a
+**B3 "posição" export** — the multi-sheet `.xlsx` you download from your broker's
+investor area (filename looks like `posicao-2026-07-11-11-28-57.xlsx`).
+
+```bash
+# 1. Preview the changes without writing anything:
+uv run portfolio import posicao-2026-07-11-11-28-57.xlsx --dry-run
+
+# 2. Apply them (asks for confirmation first):
+uv run portfolio import posicao-2026-07-11-11-28-57.xlsx
+```
+
+The importer reads the export, matches each ticker against your portfolio
+(`ITSA4` in the export ↔ `ITSA4.SA` in the file), and updates the quantities to
+match. It shows a plan and waits for your confirmation before writing.
+
+### What it reads
+
+Quantities are **summed across every tradable sheet** — `Acoes`, `Empréstimos`
+(lent shares still count as yours), `ETF`, and `Fundo de Investimento`. The
+`Renda Fixa` and `Tesouro Direto` sheets are skipped, since those have no market
+ticker (track them in the `FixedIncome` sheet instead).
+
+### Options
+
+| Flag | Description |
+|---|---|
+| `--dry-run` | Show the plan but write nothing. |
+| `-y`, `--yes` | Apply without the interactive confirmation prompt (for scripts). |
+| `--add-new` | Also add tickers found in the export but missing from your portfolio. |
+| `--portfolio PATH` | Portfolio file to update (default: the configured `EXCEL_PATH`). |
+
+### Example output
+
+```
+Portfolio import — posicao-2026-07-11-11-28-57.xlsx
+Target: data/portfolio.xlsx
+
+Quantity updates (6):
+  FLRY3.SA   1760 -> 2060
+  HYPE3.SA   1253 -> 1453
+  KLBN11.SA  1515 -> 2715
+  BBAS3.SA   1390 -> 1590
+  B5P211.SA  100 -> 147
+  JURO11.SA  260 -> 360
+
+New tickers in export (2):
+  RECR12.SA  qty 47  [Fund]  — skipped (use --add-new to add)
+  URPR12.SA  qty 432  [Fund]  — skipped (use --add-new to add)
+
+Unchanged (already correct): 35
+In portfolio but not in export (2, left untouched): BTC-USD, SAP.DE
+
+Apply these changes? [y/N]
+```
+
+### Safety
+
+- **Preview first** — nothing is written until you confirm (or pass `--yes`).
+- **Never removes** — tickers in your portfolio but absent from the export (e.g.
+  non-B3 assets like `SAP.DE` or `BTC-USD`) are reported and left untouched.
+- **Additions are opt-in** — new tickers are only added with `--add-new`.
+- **Non-destructive to your data** — only the `Quantity` cells change; your
+  `Average Price` column, other rows, and the `FixedIncome` sheet are preserved.
+
+---
+
 ## Running the tracker
 
 ```bash
@@ -191,6 +260,19 @@ Prices refresh automatically every 30 seconds (or whatever is set in `.env`).
 | Key | Action |
 |---|---|
 | `q` | Quit the application |
+| `h` | Hide / show values (privacy mode) |
+| `e` | Cycle the exchange filter |
+| `c` | Cycle the category filter |
+| `escape` | Collapse the expanded detail row |
+| `p` / `v` / `n` | Sort by P&L / Value / Name |
+| `d` / `w` | Sort by 24h / 1-week change |
+| `u` | Edit the selected position's quantity |
+| `A` | Add a new position |
+| `D` | Delete the selected position |
+
+> Editing keys (`u`, `A`, `D`) write straight to `data/portfolio.xlsx` and the
+> table refreshes within a second. `A` and `D` use capital letters (Shift+key);
+> `u` works with or without Shift.
 
 ---
 
