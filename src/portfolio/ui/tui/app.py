@@ -96,9 +96,11 @@ class PortfolioApp(App[None]):
         ("w", "sort('1w')", "Sort 1W"),
         ("n", "sort('name')", "Sort Name"),
         ("v", "sort('value')", "Sort Value"),
-        # Editing actions use uppercase letters (Shift+key) so they don't collide
-        # with the lowercase filter/sort keys above and read as "mutating" actions.
-        ("E", "edit_quantity", "Edit qty"),
+        # Editing actions. Add/Delete use uppercase letters (Shift+key) so they
+        # don't collide with the lowercase filter/sort keys above and read as
+        # "mutating" actions. Edit is bound to both "u" and "U" (comma-separated
+        # keys in one binding) so it works whether or not Shift is held.
+        ("u,U", "edit_quantity", "Edit qty"),
         ("A", "add_position", "Add"),
         ("D", "delete_position", "Delete"),
     ]
