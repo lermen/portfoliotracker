@@ -450,7 +450,13 @@ class PortfolioApp(App[None]):
             """
             if change_pct is None:
                 return value_brl
-            return value_brl / (1.0 + change_pct / 100.0)
+            denom = 1.0 + change_pct / 100.0
+            # A -100% change (price fell to zero) would divide by zero; the prior
+            # value is unrecoverable from a current value of zero, so return it
+            # unchanged rather than crashing the render.
+            if denom == 0:
+                return value_brl
+            return value_brl / denom
 
         # Sum the BRL values of all currently visible (filtered) positions.
         var_total = sum(pv.value_brl for pv in positions)
@@ -546,8 +552,13 @@ class PortfolioApp(App[None]):
         for pv in positions:
             if pv.pnl_pct is None:
                 continue
-            cost = pv.value_brl / (1.0 + pv.pnl_pct / 100.0)
-            total_cost_brl += cost
+            denom = 1.0 + pv.pnl_pct / 100.0
+            # pnl_pct == -100 means the live price is zero, so the cost basis is
+            # undefined (division by zero). Skip the position, exactly as we skip
+            # ones with no avg price — it can't contribute to the cost/value ratio.
+            if denom == 0:
+                continue
+            total_cost_brl += pv.value_brl / denom
             total_value_with_cost += pv.value_brl
         total_pnl_pct: float | None = (
             (total_value_with_cost - total_cost_brl) / total_cost_brl * 100.0

@@ -939,7 +939,12 @@ class SummaryPanel(Widget):
         for pv in positions:
             if pv.pnl_pct is None:
                 continue
-            total_cost_brl += pv.value_brl / (1.0 + pv.pnl_pct / 100.0)
+            denom = 1.0 + pv.pnl_pct / 100.0
+            # pnl_pct == -100 (a live price of zero) makes the cost basis undefined;
+            # skip it rather than divide by zero, just like a missing avg price.
+            if denom == 0:
+                continue
+            total_cost_brl += pv.value_brl / denom
             total_value_with_cost += pv.value_brl
 
         if total_cost_brl > 0:

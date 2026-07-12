@@ -167,7 +167,14 @@ async def run_engine(
                 """
                 if change_pct is None:
                     return value_brl
-                return value_brl / (1.0 + change_pct / 100.0)
+                denom = 1.0 + change_pct / 100.0
+                # A change of exactly -100% (the price fell to zero) makes the
+                # denominator 0. The prior value can't be reconstructed from a
+                # current value of zero, so return it unchanged instead of
+                # dividing by zero.
+                if denom == 0:
+                    return value_brl
+                return value_brl / denom
 
             # --- Step 5: Build and publish the snapshot ---
             fi_total = sum(fi.amount_brl for fi in fixed_income)
