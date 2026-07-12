@@ -9,7 +9,12 @@ from textual.app import App, ComposeResult
 from textual.widgets import Input, Label
 
 from portfolio.core.models import Position
-from portfolio.ui.tui.modals import AddPositionModal, ConfirmModal, QuantityModal
+from portfolio.ui.tui.modals import (
+    AddPositionModal,
+    AvgPriceModal,
+    ConfirmModal,
+    QuantityModal,
+)
 
 
 class _Host(App[None]):
@@ -55,6 +60,31 @@ async def test_quantity_modal_rejects_non_positive() -> None:
         await pilot.press("escape")
         await pilot.pause()
     assert result == [None]
+
+
+async def test_avg_price_modal_returns_entered_value() -> None:
+    result: list[float | None] = []
+    async with _Host().run_test() as pilot:
+        pilot.app.push_screen(AvgPriceModal("ITSA4.SA", 7.84), result.append)
+        await pilot.pause()
+        pilot.app.screen.query_one("#avg-input", Input).value = "6.50"
+        await pilot.press("enter")
+        await pilot.pause()
+    assert result == [6.50]
+
+
+async def test_avg_price_modal_handles_no_current_price() -> None:
+    # A position with no average price yet: the field starts empty and the user
+    # can type a value.
+    result: list[float | None] = []
+    async with _Host().run_test() as pilot:
+        pilot.app.push_screen(AvgPriceModal("MGLU3.SA", None), result.append)
+        await pilot.pause()
+        assert pilot.app.screen.query_one("#avg-input", Input).value == ""
+        pilot.app.screen.query_one("#avg-input", Input).value = "12.30"
+        await pilot.press("enter")
+        await pilot.pause()
+    assert result == [12.30]
 
 
 async def test_add_position_modal_builds_position() -> None:

@@ -118,6 +118,25 @@ def _set_quantity(path: Path, ticker: str, quantity: float) -> None:
     log.info("quantity_updated", ticker=ticker, quantity=quantity)
 
 
+def _set_avg_price(path: Path, ticker: str, avg_price: float) -> None:
+    """Update the Avg Price cell (column E) for an existing ticker. Blocking."""
+    if avg_price <= 0:
+        # Average price is the denominator of the P&L calculation, so a zero or
+        # negative value is meaningless — reject it before touching the file.
+        raise ValueError(f"Average price must be greater than 0, got {avg_price}")
+
+    wb, ws = _open_positions_sheet(path)
+    row = _find_ticker_row(ws, ticker)
+    if row is None:
+        wb.close()
+        raise PositionNotFoundError(f"Ticker {ticker!r} not found in {path}")
+
+    ws.cell(row=row, column=_COL_AVG_PRICE, value=avg_price)
+    wb.save(path)
+    wb.close()
+    log.info("avg_price_updated", ticker=ticker, avg_price=avg_price)
+
+
 def _add_position(path: Path, position: Position) -> None:
     """Append a new position row. Blocking. Raises if the ticker already exists."""
     wb, ws = _open_positions_sheet(path)
@@ -165,6 +184,11 @@ def _remove_position(path: Path, ticker: str) -> None:
 async def set_quantity(path: Path, ticker: str, quantity: float) -> None:
     """Update the quantity of an existing position, off the event loop."""
     await asyncio.to_thread(_set_quantity, path, ticker, quantity)
+
+
+async def set_avg_price(path: Path, ticker: str, avg_price: float) -> None:
+    """Update the average price of an existing position, off the event loop."""
+    await asyncio.to_thread(_set_avg_price, path, ticker, avg_price)
 
 
 async def add_position(path: Path, position: Position) -> None:

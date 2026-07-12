@@ -42,8 +42,18 @@ from portfolio.core.models import (
     PositionValue,
 )
 from portfolio.core.settings import settings
-from portfolio.core.writer import add_position, remove_position, set_quantity
-from portfolio.ui.tui.modals import AddPositionModal, ConfirmModal, QuantityModal
+from portfolio.core.writer import (
+    add_position,
+    remove_position,
+    set_avg_price,
+    set_quantity,
+)
+from portfolio.ui.tui.modals import (
+    AddPositionModal,
+    AvgPriceModal,
+    ConfirmModal,
+    QuantityModal,
+)
 from portfolio.ui.tui.widgets import (
     BitcoinMetricsPanel,
     FixedIncomeTable,
@@ -101,6 +111,7 @@ class PortfolioApp(App[None]):
         # "mutating" actions. Edit is bound to both "u" and "U" (comma-separated
         # keys in one binding) so it works whether or not Shift is held.
         ("u,U", "edit_quantity", "Edit qty"),
+        ("P", "edit_avg_price", "Edit avg"),
         ("A", "add_position", "Add"),
         ("D", "delete_position", "Delete"),
     ]
@@ -322,6 +333,30 @@ class PortfolioApp(App[None]):
 
         self.push_screen(QuantityModal(ticker, current), on_result)
 
+    def _avg_price_for(self, ticker: str) -> float | None:
+        """Look up the current average price of a ticker in the latest snapshot."""
+        if self.snapshot is None:
+            return None
+        for pv in self.snapshot.positions:
+            if pv.ticker == ticker:
+                return pv.avg_price_native
+        return None
+
+    def action_edit_avg_price(self) -> None:
+        """Open a dialog to edit the average price of the selected position."""
+        ticker = self.query_one(PortfolioTable).selected_ticker()
+        if ticker is None:
+            self.notify("Select a position in the Portfolio tab first", severity="warning")
+            return
+        current = self._avg_price_for(ticker)
+
+        def on_result(avg_price: float | None) -> None:
+            if avg_price is None:
+                return  # user cancelled
+            self.run_worker(self._apply_set_avg_price(ticker, avg_price))
+
+        self.push_screen(AvgPriceModal(ticker, current), on_result)
+
     def action_add_position(self) -> None:
         """Open a dialog to add a new position."""
         def on_result(position: Position | None) -> None:
@@ -338,7 +373,10 @@ class PortfolioApp(App[None]):
             self.notify("Select a position in the Portfolio tab first", severity="warning")
             return
 
-        def on_result(confirmed: bool) -> None:
+        # `bool | None`: Textual's push_screen may invoke the callback with None
+        # if the screen is dismissed without a result; None is falsy, so the
+        # `if confirmed` guard already handles it.
+        def on_result(confirmed: bool | None) -> None:
             if confirmed:
                 self.run_worker(self._apply_remove_position(ticker))
 
@@ -355,6 +393,15 @@ class PortfolioApp(App[None]):
             self.notify(f"Could not update {ticker}: {exc}", severity="error")
             return
         self.notify(f"{ticker} quantity → {quantity:g}")
+        self.refresh_event.set()
+
+    async def _apply_set_avg_price(self, ticker: str, avg_price: float) -> None:
+        try:
+            await set_avg_price(settings.excel_path, ticker, avg_price)
+        except Exception as exc:
+            self.notify(f"Could not update {ticker}: {exc}", severity="error")
+            return
+        self.notify(f"{ticker} avg price → {avg_price:g}")
         self.refresh_event.set()
 
     async def _apply_add_position(self, position: Position) -> None:

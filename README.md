@@ -267,12 +267,13 @@ Prices refresh automatically every 30 seconds (or whatever is set in `.env`).
 | `p` / `v` / `n` | Sort by P&L / Value / Name |
 | `d` / `w` | Sort by 24h / 1-week change |
 | `u` | Edit the selected position's quantity |
+| `P` | Edit the selected position's average price |
 | `A` | Add a new position |
 | `D` | Delete the selected position |
 
-> Editing keys (`u`, `A`, `D`) write straight to `data/portfolio.xlsx` and the
-> table refreshes within a second. `A` and `D` use capital letters (Shift+key);
-> `u` works with or without Shift.
+> Editing keys (`u`, `P`, `A`, `D`) write straight to `data/portfolio.xlsx` and
+> the table refreshes within a second. `P`, `A`, and `D` use capital letters
+> (Shift+key); `u` works with or without Shift.
 
 ---
 

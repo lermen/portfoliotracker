@@ -14,7 +14,12 @@ import pytest
 
 from portfolio.core.exceptions import DuplicateTickerError, PositionNotFoundError
 from portfolio.core.models import Position
-from portfolio.core.writer import add_position, remove_position, set_quantity
+from portfolio.core.writer import (
+    add_position,
+    remove_position,
+    set_avg_price,
+    set_quantity,
+)
 
 
 def _make_workbook(path: Path) -> None:
@@ -74,6 +79,23 @@ async def test_set_quantity_missing_ticker_raises(book: Path) -> None:
 async def test_set_quantity_rejects_non_positive(book: Path) -> None:
     with pytest.raises(ValueError):
         await set_quantity(book, "ITSA4.SA", 0)
+
+
+async def test_set_avg_price_updates_only_that_cell(book: Path) -> None:
+    await set_avg_price(book, "ITSA4.SA", 6.50)
+    rows = _rows(book)
+    assert rows[0] == ("ITSA4.SA", 100, "B3", "Stock", 6.50)   # avg price changed, qty intact
+    assert rows[1] == ("WEGE3.SA", 200, "B3", "Stock", 33.05)  # other row untouched
+
+
+async def test_set_avg_price_missing_ticker_raises(book: Path) -> None:
+    with pytest.raises(PositionNotFoundError):
+        await set_avg_price(book, "NOPE.SA", 10)
+
+
+async def test_set_avg_price_rejects_non_positive(book: Path) -> None:
+    with pytest.raises(ValueError):
+        await set_avg_price(book, "ITSA4.SA", 0)
 
 
 async def test_add_position_appends_row(book: Path) -> None:

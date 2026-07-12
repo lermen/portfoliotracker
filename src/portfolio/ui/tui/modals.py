@@ -92,6 +92,67 @@ class QuantityModal(ModalScreen[float | None]):
         self.dismiss(None)
 
 
+class AvgPriceModal(ModalScreen[float | None]):
+    """Ask the user for a new average purchase price for one existing ticker.
+
+    Returns the new price as a float, or None if cancelled. Mirrors QuantityModal
+    but edits the "Avg Price" column, which feeds the P&L calculation.
+    """
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def __init__(self, ticker: str, current_avg_price: float | None) -> None:
+        super().__init__()
+        self.ticker = ticker
+        self.current_avg_price = current_avg_price
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Label(f"Edit avg price — {self.ticker}", id="dialog-title")
+            # Pre-fill the current price, or leave the field empty when the
+            # position has no average price yet (the cell was blank in the sheet).
+            initial = (
+                "" if self.current_avg_price is None
+                else f"{self.current_avg_price:g}"
+            )
+            yield Input(
+                value=initial,
+                placeholder="e.g. 32.50",
+                type="number",
+                id="avg-input",
+            )
+            with Horizontal(id="dialog-buttons"):
+                yield Button("Save", variant="primary", id="save")
+                yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#avg-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._save()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "save":
+            self._save()
+        else:
+            self.dismiss(None)
+
+    def _save(self) -> None:
+        raw = self.query_one("#avg-input", Input).value.strip()
+        try:
+            avg_price = float(raw)
+        except ValueError:
+            self.notify("Enter a valid number", severity="error")
+            return
+        if avg_price <= 0:
+            self.notify("Average price must be greater than 0", severity="error")
+            return
+        self.dismiss(avg_price)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class AddPositionModal(ModalScreen[Position | None]):
     """Collect the fields for a brand-new position.
 

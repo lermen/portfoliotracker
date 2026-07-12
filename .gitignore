@@ -8,3 +8,6 @@ __pycache__/
 .pytest_cache/
 dist/
 data/*.xlsx
+
+# macOS
+.DS_Store
