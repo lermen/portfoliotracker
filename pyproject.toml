@@ -12,6 +12,7 @@ dependencies = [
     "yfinance>=0.2",
     "textual>=0.70",
     "structlog>=24.0",
+    "nicegui>=3.14.0",
 ]
 
 [project.scripts]

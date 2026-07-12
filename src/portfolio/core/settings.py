@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     # freshness with not hammering the Yahoo Finance API.
     refresh_interval_seconds: int = 30
 
+    # Host/port for the NiceGUI web UI (`portfolio web`). Bound to localhost by
+    # default since the portfolio data is private; override to expose it on a LAN.
+    web_host: str = "127.0.0.1"
+    web_port: int = 8080
+
     # `model_config` is a special Pydantic attribute (not a regular field).
     # `SettingsConfigDict` is a typed dictionary that configures pydantic-settings
     # behaviour — it gives IDE autocompletion and prevents typos in config keys.

@@ -49,7 +49,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     # `action="store_true"` makes a flag: present → True, absent → False.
     import_parser.add_argument(
-        "-y", "--yes",
+        "-y",
+        "--yes",
         action="store_true",
         help="Apply changes without the interactive confirmation prompt.",
     )
@@ -62,6 +63,25 @@ def _build_parser() -> argparse.ArgumentParser:
         "--add-new",
         action="store_true",
         help="Also add tickers found in the export but missing from the portfolio.",
+    )
+
+    web_parser = subparsers.add_parser(
+        "web",
+        help="Launch the NiceGUI-based web UI.",
+        description=(
+            "Serve the portfolio as a web app (dashboard, positions, allocation)."
+        ),
+    )
+    web_parser.add_argument(
+        "--host",
+        default=None,
+        help="Interface to bind (default: settings.web_host, i.e. 127.0.0.1).",
+    )
+    web_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Port to listen on (default: settings.web_port, i.e. 8080).",
     )
     return parser
 
@@ -85,6 +105,19 @@ def main() -> None:
         # `sys.exit(code)` ends the process with an exit status — 0 means success,
         # non-zero signals an error, which scripts and CI can check.
         sys.exit(exit_code)
+
+    if args.command == "web":
+        # Imported lazily so the default TUI path doesn't pay for NiceGUI/FastAPI
+        # imports it never uses.
+        from portfolio.core.settings import settings
+        from portfolio.ui.web.app import run as run_web
+
+        if args.host is not None:
+            settings.web_host = args.host
+        if args.port is not None:
+            settings.web_port = args.port
+        run_web()
+        return
 
     # No sub-command: launch the Textual TUI (the default, original behaviour).
     # `.run()` starts the Textual event loop, which blocks until the user quits.

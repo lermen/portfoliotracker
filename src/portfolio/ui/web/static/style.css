@@ -1,0 +1,44 @@
+/* Design tokens ported from the handoff's styles.css (fintech / dark, the
+   canonical reference — see design_handoff_portfolio_tracker/README.md). */
+
+body {
+  background-color: #0b0e14;
+  color: #e7eaf0;
+  font-family: "Inter", sans-serif;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+.font-mono {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+}
+
+.card-surface {
+  background-color: #151a23;
+  border: 1px solid #232a38;
+  border-radius: 14px;
+}
+
+.text-up {
+  color: #10b981;
+}
+
+.text-down {
+  color: #ef4444;
+}
+
+.hero-value {
+  font-size: 56px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+.label-mute {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #8b94a8;
+}
