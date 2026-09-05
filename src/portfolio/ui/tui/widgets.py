@@ -18,6 +18,11 @@
 
 import math
 from collections import defaultdict
+
+# `Sequence` is the abstract type for "something you can iterate over and index"
+# — a list or a tuple both satisfy it. Using it in a signature means the caller
+# is free to pass either.
+from collections.abc import Sequence
 from typing import Any
 
 # Rich library types for terminal styling.
@@ -94,12 +99,26 @@ def _fmt_quantity(quantity: float, category: str) -> str:
     return f"{quantity:,.2f}" if quantity % 1 else f"{quantity:,.0f}"
 
 
+# Colours for a gain and a loss, used everywhere either is shown.
+#
+# These are explicit hex values rather than colour *names* for two reasons.
+# First, "green" is a CSS colour name meaning #008000 — a dark olive that reads
+# as brown-grey next to "red" (#ff0000), which is full brightness. Second, this
+# file feeds colours to two different renderers: Rich `Text` objects for the
+# DataTable cells, and Textual markup for the summary cards. The two have
+# different colour-name tables (Textual knows "lime", Rich knows "bright_green",
+# neither knows both), so a name that looks right in one can silently fall back
+# to plain white in the other. A hex value means the same thing to both.
+COLOR_UP = "#00e676"     # a green that actually reads as green on a dark terminal
+COLOR_DOWN = "#ff0000"
+
+
 def _fmt_change(change_pct: float | None) -> RenderableType:
     """Format a percentage change with color (green/red) and a + sign for gains."""
     if change_pct is None:
         return Text("N/A", style="dim")
     sign = "+" if change_pct >= 0 else ""
-    color = "green" if change_pct >= 0 else "red"
+    color = COLOR_UP if change_pct >= 0 else COLOR_DOWN
     return Text(f"{sign}{change_pct:.2f}%", style=color)
 
 
@@ -108,7 +127,7 @@ def _fmt_pnl(pnl_pct: float | None) -> RenderableType:
     if pnl_pct is None:
         return Text("----", style="dim")
     sign = "+" if pnl_pct >= 0 else ""
-    color = "green" if pnl_pct >= 0 else "red"
+    color = COLOR_UP if pnl_pct >= 0 else COLOR_DOWN
     return Text(f"{sign}{pnl_pct:.2f}%", style=color)
 
 
@@ -315,7 +334,7 @@ def _fear_greed_style(value: int) -> str:
         return "bold yellow"
     if value <= 74:
         return "bold green"
-    return "bold bright_green"
+    return f"bold {COLOR_UP}"
 
 
 def _funding_rate_style(rate: float) -> str:
@@ -338,7 +357,7 @@ def _mvrv_style(ratio: float) -> str:
     Historically: < 1 = undervalued, 1–2.4 = fair, 2.4–3.5 = overvalued, > 3.5 = top zone.
     """
     if ratio < 1.0:
-        return "bold bright_green"
+        return f"bold {COLOR_UP}"
     if ratio < 2.4:
         return "bold yellow"
     if ratio < 3.5:
@@ -363,12 +382,19 @@ def _mayers_style(multiple: float) -> str:
     Mayer's original thresholds: accumulate below 0.8, caution above 2.4.
     """
     if multiple < 0.8:
-        return "bold bright_green"
+        return f"bold {COLOR_UP}"
     if multiple < 1.0:
         return "bold green"
     if multiple < 2.4:
         return "bold yellow"
     return "bold red"
+
+
+# `_styled`: wrap `text` in a Rich markup tag, unless `style` is empty — in
+# which case the text is returned untouched so any markup it already carries
+# renders at full strength.
+def _styled(text: str, style: str) -> str:
+    return f"[{style}]{text}[/{style}]" if style else text
 
 
 class MetricCard(Static):
@@ -398,18 +424,26 @@ class MetricCard(Static):
         subtitle: str = "",
         value_style: str = "bold",
         description: str = "",
+        subtitle_style: str = "dim",
+        description_style: str = "dim",
     ) -> None:
         """Re-render the card with new content.
 
         Rich markup uses `[style]text[/style]` tags, like HTML for the terminal.
         `[dim]` makes text appear faded; color names like `[green]` set the color.
         `\\n` is a newline character — it adds blank lines for visual breathing room.
+
+        The subtitle and description default to `[dim]`, but a caller can pass
+        any style — `COLOR_UP`/`COLOR_DOWN` for a signed change, say. Passing
+        an empty style wraps the text in nothing at all, which is what you want
+        when the text already carries its own markup: nesting a colour inside
+        `[dim]` yields a *dim* version of it, not the colour you asked for.
         """
         lines = [f"[dim]{title}[/dim]", "", f"[{value_style}]{value}[/{value_style}]"]
         if subtitle:
-            lines += ["", f"[dim]{subtitle}[/dim]"]
+            lines += ["", _styled(subtitle, subtitle_style)]
         if description:
-            lines += ["", f"[dim]{description}[/dim]"]
+            lines += ["", _styled(description, description_style)]
         self.update("\n".join(lines))
 
 
@@ -791,9 +825,84 @@ def _compact_brl(value: float) -> str:
     return f"R${value:.0f}"
 
 
+# `_on_exchange`: does this position trade on `exchange`? Matching is
+# case-insensitive (`.casefold()` is the Unicode-aware version of `.lower()`),
+# so a spreadsheet row saying "b3" still counts.
+#
+# `suffix` is a safety net for rows where the Exchange column was left blank:
+# a ticker like "ITSA4.SA" is unambiguously a B3 listing, and "SAP.DE" is a
+# Frankfurt listing, so we fall back to the ticker's suffix in that case.
+def _on_exchange(pv: PositionValue, exchange: str, suffix: str) -> bool:
+    listed_on = pv.exchange.casefold()
+    if listed_on:
+        return listed_on == exchange.casefold()
+    return pv.ticker.casefold().endswith(suffix)
+
+
+def _exchange_total(
+    positions: Sequence[PositionValue],
+    exchange: str,
+    suffix: str,
+) -> float:
+    """Sum the BRL value of every position listed on `exchange`."""
+    return sum(
+        pv.value_brl for pv in positions if _on_exchange(pv, exchange, suffix)
+    )
+
+
+# `_exchange_change`: how much the slice of the portfolio listed on one exchange
+# moved over a period, as (absolute BRL delta, percentage).
+#
+# `attr` is the *name* of the field holding that period's price change —
+# "change_pct" for 24h, "change_pct_1w" for a week. `getattr(pv, attr)` looks up
+# a field by name at runtime, which lets one function serve both periods.
+#
+# The maths mirrors the rest of the summary: a position worth `value_brl` today
+# after moving `pct`% was worth `value_brl / (1 + pct / 100)` at the start of the
+# period. Summing both sides gives the slice's then-and-now totals.
+#
+# Returns `(None, None)` when no position on that exchange has data for the
+# period — the caller then shows "N/A" instead of a misleading 0%.
+def _exchange_change(
+    positions: Sequence[PositionValue],
+    exchange: str,
+    suffix: str,
+    attr: str,
+) -> tuple[float | None, float | None]:
+    now_total = 0.0
+    prev_total = 0.0
+    for pv in positions:
+        if not _on_exchange(pv, exchange, suffix):
+            continue
+        pct: float | None = getattr(pv, attr)
+        if pct is None:
+            continue
+        denom = 1.0 + pct / 100.0
+        # A price of exactly zero makes pct == -100, so the starting value is
+        # undefined (division by zero). Skip it, as the P&L block does.
+        if denom == 0:
+            continue
+        now_total += pv.value_brl
+        prev_total += pv.value_brl / denom
+
+    if prev_total <= 0:
+        return None, None
+    delta = now_total - prev_total
+    return delta, delta / prev_total * 100.0
+
+
+def _delta_color(delta: float) -> str:
+    """Colour for a change: green when it is up, red when it is down.
+
+    Zero counts as green — a flat day reads as "not losing", and this matches
+    how the sign is rendered ("+0.00%").
+    """
+    return COLOR_UP if delta >= 0 else COLOR_DOWN
+
+
 def _delta_style(delta: float) -> str:
     """Rich style string for a positive (green) or negative (red) delta."""
-    return "bold green" if delta >= 0 else "bold red"
+    return f"bold {_delta_color(delta)}"
 
 
 def _bar(pct: float, width: int = 12) -> str:
@@ -837,6 +946,8 @@ class SummaryPanel(Widget):
         # --- Row 1: hero cards (total / P&L / day) ---
         with Horizontal(id="summary-hero"):
             yield MetricCard(id="sum-total", classes="summary-hero-card")
+            yield MetricCard(id="sum-b3", classes="summary-hero-card")
+            yield MetricCard(id="sum-frankfurt", classes="summary-hero-card")
             yield MetricCard(id="sum-pnl", classes="summary-hero-card")
             yield MetricCard(id="sum-day", classes="summary-hero-card")
 
@@ -870,6 +981,8 @@ class SummaryPanel(Widget):
         """
         for card_id, title, subtitle in (
             ("sum-total", "TOTAL PORTFOLIO", ""),
+            ("sum-b3", "TOTAL PORTFOLIO B3", ""),
+            ("sum-frankfurt", "TOTAL PORTFOLIO FRANKFURT", ""),
             ("sum-pnl", "TOTAL P&L", ""),
             ("sum-day", "DAY CHANGE", ""),
         ):
@@ -929,6 +1042,47 @@ class SummaryPanel(Widget):
             "TOTAL PORTFOLIO", total_value_str, split_str, "bold",
         )
 
+        # --- Hero: per-exchange totals (B3 and Frankfurt) --------------------
+        # These two cards break the *variable* portfolio down by where the asset
+        # is listed. Fixed income has no exchange, so it is deliberately left
+        # out — the percentage in the subtitle is therefore relative to the
+        # grand total, making both cards comparable to the TOTAL card above.
+        for card_id, title, exchange, suffix in (
+            ("sum-b3", "TOTAL PORTFOLIO B3", "B3", ".sa"),
+            ("sum-frankfurt", "TOTAL PORTFOLIO FRANKFURT", "Frankfurt", ".de"),
+        ):
+            ex_total = _exchange_total(positions, exchange, suffix)
+            ex_pct = (ex_total / grand_total * 100) if grand_total > 0 else 0.0
+            ex_value_str = masked if hide_values else f"R$ {ex_total:,.2f}"
+
+            # 24h and 1W movement of just this exchange's holdings. Both are
+            # rendered as percentages only — a percentage reveals nothing about
+            # the size of the portfolio, so it stays visible in privacy mode.
+            parts = []
+            for label, attr in (("24h", "change_pct"), ("1W", "change_pct_1w")):
+                _, period_pct = _exchange_change(positions, exchange, suffix, attr)
+                if period_pct is None:
+                    parts.append(f"[dim]{label} N/A[/dim]")
+                    continue
+                sign = "+" if period_pct >= 0 else ""
+                color = _delta_color(period_pct)
+                parts.append(
+                    f"[dim]{label}[/dim] [{color}]{sign}{period_pct:.2f}%[/{color}]"
+                )
+            # " · " (a middle dot) separates the two periods on one line.
+            periods_str = " · ".join(parts)
+
+            self.query_one(f"#{card_id}", MetricCard).set_metric(
+                title,
+                ex_value_str,
+                f"{ex_pct:.1f}% of total",
+                "bold",
+                periods_str,
+                # The line already colours each period itself, so it must not be
+                # dimmed as a whole — see `MetricCard.set_metric`.
+                description_style="",
+            )
+
         # --- Hero: total unrealised P&L --------------------------------------
         # Reconstruct each position's cost basis from its current value and
         # pnl_pct, the same identity the status bar uses:
@@ -954,13 +1108,18 @@ class SummaryPanel(Widget):
             pnl_value_str = masked if hide_values else f"{sign}R$ {pnl_abs:,.2f}"
             pnl_subtitle = f"{sign}{pnl_pct:.2f}%"
             pnl_style = _delta_style(pnl_abs)
+            # The subtitle is the same change expressed as a percentage, so it
+            # takes the same colour as the headline figure (unbolded).
+            pnl_subtitle_style = _delta_color(pnl_abs)
         else:
             pnl_value_str = "N/A"
             pnl_subtitle = ""
             pnl_pct = None
             pnl_style = "bold"
+            pnl_subtitle_style = "dim"
         self.query_one("#sum-pnl", MetricCard).set_metric(
             "TOTAL P&L", pnl_value_str, pnl_subtitle, pnl_style,
+            subtitle_style=pnl_subtitle_style,
         )
 
         # --- Hero: 24h day change --------------------------------------------
@@ -975,12 +1134,15 @@ class SummaryPanel(Widget):
             day_value_str = masked if hide_values else f"{sign}R$ {day_abs:,.2f}"
             day_subtitle = f"{sign}{day_pct:.2f}%"
             day_style = _delta_style(day_abs)
+            day_subtitle_style = _delta_color(day_abs)
         else:
             day_value_str = "N/A"
             day_subtitle = ""
             day_style = "bold"
+            day_subtitle_style = "dim"
         self.query_one("#sum-day", MetricCard).set_metric(
             "DAY CHANGE", day_value_str, day_subtitle, day_style,
+            subtitle_style=day_subtitle_style,
         )
 
         # --- Performance strip: 24h / 1W / 6M / 12M --------------------------
@@ -999,12 +1161,14 @@ class SummaryPanel(Widget):
                 value_str = f"{sign}{pct:.2f}%"
                 subtitle = "" if hide_values else f"{sign}R$ {delta:,.0f}"
                 style = _delta_style(delta)
+                subtitle_style = _delta_color(delta)
             else:
                 value_str = "—"
                 subtitle = ""
                 style = "bold"
+                subtitle_style = "dim"
             self.query_one(f"#{card_id}", MetricCard).set_metric(
-                label, value_str, subtitle, style,
+                label, value_str, subtitle, style, subtitle_style=subtitle_style,
             )
 
         # --- Allocation block ------------------------------------------------
@@ -1046,7 +1210,7 @@ class SummaryPanel(Widget):
         def _mover_line(pv: PositionValue) -> str:
             pct = pv.change_pct or 0.0
             sign = "+" if pct >= 0 else ""
-            color = "green" if pct >= 0 else "red"
+            color = _delta_color(pct)
             # Reconstruct the 24h absolute R$ change for this position from its
             # current value and percentage (same identity as the deltas above).
             prev_val = pv.value_brl / (1.0 + pct / 100.0) if pct != -100 else 0.0

@@ -88,7 +88,13 @@ SummaryPanel {
 }
 
 #summary-hero {
-    height: 9;        /* tall enough to fit title + value + subtitle comfortably */
+    /* Five cards share this row, each stacking title + value + share-of-total
+     * + the 24h/1W line. The longer titles ("TOTAL PORTFOLIO FRANKFURT") wrap
+     * onto a second line on narrower terminals, so the row is sized for the
+     * wrapped case — otherwise the bottom line gets clipped. On a narrow
+     * (~100 column) terminal both the title and the 24h/1W line wrap, which is
+     * what sets this height. */
+    height: 14;
 }
 
 #summary-perf {
@@ -133,9 +139,11 @@ SummaryPanel {
     content-align: center middle;
 }
 
-/* Hero cards: bigger padding so the headline number has room to breathe. */
+/* Hero cards: vertical padding so the headline number has room to breathe,
+ * but only one column horizontally — with five cards in the row, every spare
+ * character counts toward keeping titles and values on one line. */
 .summary-hero-card {
-    padding: 1 2;
+    padding: 1 1;
 }
 
 /* Compact metric cards in the performance row: tighter padding than the
