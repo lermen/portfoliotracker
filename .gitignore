@@ -8,6 +8,9 @@ __pycache__/
 .pytest_cache/
 dist/
 data/*.xlsx
+data/*.bak
+# B3 position exports (real holdings) dropped in the project root
+posicao-*.xlsx
 
 # macOS
 .DS_Store

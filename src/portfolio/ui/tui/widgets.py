@@ -60,6 +60,7 @@ from portfolio.core.models import (
     PortfolioSnapshot,
     PositionValue,
 )
+from portfolio.core.totals import cost_and_value
 
 # Tuple of column header strings — used both here and when rebuilding the table.
 COLUMNS = ("Ticker", "Exchange", "Category", "Quantity", "Price", "Avg Price", "Value (R$)", "% Portfolio", "P&L %", "24h %", "1W %", "6M %", "12M %")
@@ -80,6 +81,20 @@ def _fmt_exchange(exchange: str, market_open: bool) -> RenderableType:
         return Text(exchange, style="green")
     # "(c)" is short for "closed" — shown when the exchange is not in its regular session.
     return Text(f"{exchange} (c)", style="red")
+
+
+def _fmt_ticker(ticker: str, selected: frozenset[str]) -> RenderableType:
+    """Ticker cell, marked with "●" when the row is part of the user's selection.
+
+    With an empty selection this returns the bare ticker string — identical to
+    the table before multi-select existed. Once anything is selected, unselected
+    rows get two spaces of padding so all tickers stay left-aligned.
+    """
+    if not selected:
+        return ticker
+    if ticker in selected:
+        return Text(f"● {ticker}", style="bold cyan")
+    return f"  {ticker}"
 
 
 def _fmt_price(price: float, currency: str) -> str:
@@ -600,6 +615,7 @@ class PortfolioTable(DataTable):  # type: ignore[type-arg]
         self._last_snapshot: PortfolioSnapshot | None = None
         self._hide_values: bool = False
         self._sort_key: str = "pnl"
+        self._selected: frozenset[str] = frozenset()   # tickers marked with Space
 
     def _sorted(self, positions: list[PositionValue]) -> list[PositionValue]:
         """Sort positions according to the active sort key."""
@@ -661,7 +677,13 @@ class PortfolioTable(DataTable):  # type: ignore[type-arg]
             key = self._expanded_ticker
             self._expanded_ticker = None
             if self._last_snapshot is not None:
-                self.update(self._last_snapshot, hide_values=self._hide_values)
+                self.update(
+                    self._last_snapshot,
+                    hide_values=self._hide_values,
+                    # Pass the active sort, or `update()` falls back to its P&L default.
+                    sort_key=self._sort_key,
+                    selected=self._selected,
+                )
                 self.move_cursor(row=self._row_index_for(key))
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -678,20 +700,35 @@ class PortfolioTable(DataTable):  # type: ignore[type-arg]
         # Toggle: if this ticker is already expanded, collapse it; otherwise expand it.
         self._expanded_ticker = None if self._expanded_ticker == key else key
         if self._last_snapshot is not None:
-            self.update(self._last_snapshot, hide_values=self._hide_values)
+            self.update(
+                self._last_snapshot,
+                hide_values=self._hide_values,
+                # Pass the active sort, or `update()` falls back to its P&L default.
+                sort_key=self._sort_key,
+                selected=self._selected,
+            )
         self.move_cursor(row=self._row_index_for(key))
 
     def update(  # type: ignore[override]
-        self, snapshot: PortfolioSnapshot, hide_values: bool = False, sort_key: str = "pnl"
+        self,
+        snapshot: PortfolioSnapshot,
+        hide_values: bool = False,
+        sort_key: str = "pnl",
+        selected: frozenset[str] = frozenset(),
     ) -> None:
         """Rebuild the table from a new snapshot.
 
         We clear and re-add all rows on every update. This is simpler than
         diffing individual cells, and Textual handles the screen redraw efficiently.
+
+        `selected` holds the tickers the user has marked with Space. Selected
+        rows get a "●" marker in the Ticker column. When nothing is selected the
+        Ticker cell is the plain ticker string, exactly as before the feature.
         """
         self._last_snapshot = snapshot
         self._hide_values = hide_values
         self._sort_key = sort_key
+        self._selected = selected
 
         # Remember the cursor position so we can restore it after rebuilding.
         saved_row = self.cursor_row if self.row_count > 0 else None
@@ -711,7 +748,7 @@ class PortfolioTable(DataTable):  # type: ignore[type-arg]
         for pv in sorted_positions:
             pct_portfolio = pv.value_brl / grand_total * 100 if grand_total > 0 else 0.0
             self.add_row(
-                pv.ticker,
+                _fmt_ticker(pv.ticker, selected),
                 _fmt_exchange(pv.exchange, pv.market_open),
                 pv.category,
                 masked if hide_values else _fmt_quantity(pv.quantity, pv.category),
@@ -1085,21 +1122,10 @@ class SummaryPanel(Widget):
 
         # --- Hero: total unrealised P&L --------------------------------------
         # Reconstruct each position's cost basis from its current value and
-        # pnl_pct, the same identity the status bar uses:
+        # pnl_pct, the same identity the status bar uses (see core/totals.py):
         #     cost = value / (1 + pnl_pct / 100)
-        # Positions without an avg price (pnl_pct is None) are skipped.
-        total_cost_brl = 0.0
-        total_value_with_cost = 0.0
-        for pv in positions:
-            if pv.pnl_pct is None:
-                continue
-            denom = 1.0 + pv.pnl_pct / 100.0
-            # pnl_pct == -100 (a live price of zero) makes the cost basis undefined;
-            # skip it rather than divide by zero, just like a missing avg price.
-            if denom == 0:
-                continue
-            total_cost_brl += pv.value_brl / denom
-            total_value_with_cost += pv.value_brl
+        # Positions without an avg price, or with a zero live price, are skipped.
+        total_cost_brl, total_value_with_cost = cost_and_value(positions)
 
         if total_cost_brl > 0:
             pnl_abs = total_value_with_cost - total_cost_brl

@@ -42,6 +42,7 @@ from portfolio.core.models import (
     PositionValue,
 )
 from portfolio.core.settings import settings
+from portfolio.core.totals import total_pnl_pct, value_before
 from portfolio.core.writer import (
     add_position,
     remove_position,
@@ -114,6 +115,10 @@ class PortfolioApp(App[None]):
         ("P", "edit_avg_price", "Edit avg"),
         ("A", "add_position", "Add"),
         ("D", "delete_position", "Delete"),
+        # Multi-select: mark rows in the Portfolio tab so the status bar totals
+        # only the marked ones. With nothing selected, totals cover all visible rows.
+        ("space", "toggle_select", "Select"),
+        ("x", "clear_selection", "Clear sel"),
     ]
 
     # `reactive[T]` declares a reactive variable of type T.
@@ -133,6 +138,18 @@ class PortfolioApp(App[None]):
     hide_values: reactive[bool] = reactive(True)
 
     sort_key: reactive[str] = reactive("pnl")   # which column to sort the portfolio table by
+
+    # Tickers the user has marked in the Portfolio tab (Space toggles, X clears).
+    #
+    # Why `frozenset` and not `set`? Textual only notices a reactive change when
+    # you *assign* a new value (`self.selected_tickers = ...`). Mutating a plain
+    # set in place (`self.selected_tickers.add(t)`) would change the data without
+    # telling Textual, so nothing would re-render. A `frozenset` is immutable —
+    # it has no `.add()` — which forces us to always build and assign a new one.
+    #
+    # We store tickers rather than row numbers because the table is rebuilt on
+    # every refresh and rows move whenever the sort order or filters change.
+    selected_tickers: reactive[frozenset[str]] = reactive(frozenset())
 
     def __init__(self) -> None:
         """Create the two asyncio queues used to receive data from backend workers.
@@ -300,6 +317,26 @@ class PortfolioApp(App[None]):
         """Change the sort order of the portfolio table."""
         self.sort_key = key
 
+    # --- selection actions ---
+
+    def action_toggle_select(self) -> None:
+        """Add the row under the cursor to the selection, or remove it if present."""
+        ticker = self.query_one(PortfolioTable).selected_ticker()
+        if ticker is None:
+            self.notify("Select a position in the Portfolio tab first", severity="warning")
+            return
+        # `^` on sets is "symmetric difference": items in one set or the other but
+        # not both. With a one-item set it acts as a toggle — adds the ticker if
+        # missing, removes it if present — and returns a *new* frozenset, which
+        # is exactly the "assign a new value" Textual needs to fire the watcher.
+        self.selected_tickers = self.selected_tickers ^ {ticker}
+
+    def action_clear_selection(self) -> None:
+        """Deselect every row, returning the totals to the whole visible table."""
+        # Guard so pressing X with nothing selected doesn't trigger a re-render.
+        if self.selected_tickers:
+            self.selected_tickers = frozenset()
+
     # --- editing actions ---
     # These drive the "edit directly in the app" feature. Each one opens a modal
     # dialog, then writes the result to the spreadsheet via `core/writer.py`.
@@ -442,42 +479,40 @@ class PortfolioApp(App[None]):
 
         positions = self._filtered_positions()
 
-        def _value_before(value_brl: float, change_pct: float | None) -> float:
-            """Back-calculate portfolio value before a given percentage change.
+        # --- Row selection ---
+        # Only selected rows that are currently *visible* count. A selected ticker
+        # hidden by a filter stays selected (it comes back when the filter is
+        # cleared) but is left out of the totals, since the user can't see it.
+        selected = [pv for pv in positions if pv.ticker in self.selected_tickers]
+        selection_active = bool(selected)
 
-            If today's value = V and the change was p%, then:
-                V_before = V / (1 + p/100)
-            """
-            if change_pct is None:
-                return value_brl
-            denom = 1.0 + change_pct / 100.0
-            # A -100% change (price fell to zero) would divide by zero; the prior
-            # value is unrecoverable from a current value of zero, so return it
-            # unchanged rather than crashing the render.
-            if denom == 0:
-                return value_brl
-            return value_brl / denom
+        # The status bar totals cover the selected rows when there are any, and
+        # otherwise every visible row — the original, pre-selection behaviour.
+        totals_positions = selected if selection_active else positions
 
-        # Sum the BRL values of all currently visible (filtered) positions.
-        var_total = sum(pv.value_brl for pv in positions)
-        var_total_24h = sum(_value_before(pv.value_brl, pv.change_pct) for pv in positions)
-        var_total_1w = sum(_value_before(pv.value_brl, pv.change_pct_1w) for pv in positions)
-        var_total_6m = sum(_value_before(pv.value_brl, pv.change_pct_6m) for pv in positions)
-        var_total_12m = sum(_value_before(pv.value_brl, pv.change_pct_12m) for pv in positions)
+        # Sum the BRL values of the positions the status bar is reporting on.
+        var_total = sum(pv.value_brl for pv in totals_positions)
+        var_total_24h = sum(value_before(pv.value_brl, pv.change_pct) for pv in totals_positions)
+        var_total_1w = sum(value_before(pv.value_brl, pv.change_pct_1w) for pv in totals_positions)
+        var_total_6m = sum(value_before(pv.value_brl, pv.change_pct_6m) for pv in totals_positions)
+        var_total_12m = sum(value_before(pv.value_brl, pv.change_pct_12m) for pv in totals_positions)
 
         fi_total = self.snapshot.fixed_income_total
 
         # `grand_total` is the full portfolio value (variable + fixed income) and is
         # used by the Fixed Income tab so each row's percentage is computed against
-        # the whole portfolio.
-        grand_total = var_total + fi_total
+        # the whole portfolio. It is based on all visible rows, never the selection,
+        # so selecting rows doesn't change the Fixed Income tab.
+        visible_total = sum(pv.value_brl for pv in positions)
+        grand_total = visible_total + fi_total
 
         # `displayed_total` is what the status bar shows. When a filter is active
         # (exchange or category != "ALL") fixed-income positions are excluded
         # because they have no exchange/category and therefore can't match the
-        # filter — including them would contradict the user's selection.
+        # filter — including them would contradict the user's selection. The same
+        # reasoning applies to a row selection: only the picked rows are summed.
         filter_active = self.filter_exchange != "ALL" or self.filter_category != "ALL"
-        displayed_total = var_total if filter_active else grand_total
+        displayed_total = var_total if selection_active or filter_active else grand_total
 
         # --- Summary tab ---
         # The summary always shows the unfiltered portfolio: it's the
@@ -496,7 +531,12 @@ class PortfolioApp(App[None]):
         filtered_snapshot = self.snapshot.model_copy(
             update={"positions": positions}
         )
-        self.query_one(PortfolioTable).update(filtered_snapshot, hide_values=self.hide_values, sort_key=self.sort_key)
+        self.query_one(PortfolioTable).update(
+            filtered_snapshot,
+            hide_values=self.hide_values,
+            sort_key=self.sort_key,
+            selected=self.selected_tickers,
+        )
 
         # --- Fixed Income tab ---
         self.query_one(FixedIncomeTable).update(
@@ -539,32 +579,10 @@ class PortfolioApp(App[None]):
                 return f"{sign}{pct:.2f}%"      # only show percentage in privacy mode
             return f"{sign}R${delta:,.2f} ({sign}{pct:.2f}%)"
 
-        # Total unrealised P&L % across the currently visible positions.
-        # We reconstruct each position's BRL cost basis from `value_brl` and `pnl_pct`:
-        #   pnl_pct/100 = (value_brl − cost_brl) / cost_brl  ⇒  cost_brl = value_brl / (1 + pnl_pct/100)
-        # This identity holds in both currency conventions used by the engine
-        # (native-currency avg for stocks/ETFs, BRL avg for crypto), because the
-        # engine always computes pnl_pct against a same-currency reference price.
-        # Positions with no avg price (pnl_pct is None) are skipped — they don't
-        # contribute to either side of the ratio.
-        total_cost_brl = 0.0
-        total_value_with_cost = 0.0
-        for pv in positions:
-            if pv.pnl_pct is None:
-                continue
-            denom = 1.0 + pv.pnl_pct / 100.0
-            # pnl_pct == -100 means the live price is zero, so the cost basis is
-            # undefined (division by zero). Skip the position, exactly as we skip
-            # ones with no avg price — it can't contribute to the cost/value ratio.
-            if denom == 0:
-                continue
-            total_cost_brl += pv.value_brl / denom
-            total_value_with_cost += pv.value_brl
-        total_pnl_pct: float | None = (
-            (total_value_with_cost - total_cost_brl) / total_cost_brl * 100.0
-            if total_cost_brl > 0
-            else None
-        )
+        # Total unrealised P&L % across the positions being totalled (selected
+        # rows, or all visible rows). The cost-basis reconstruction lives in
+        # core/totals.py so the Summary tab and this status bar share it.
+        pnl_pct = total_pnl_pct(totals_positions)
 
         def _fmt_total_pnl(pnl: float | None) -> str:
             if pnl is None:
@@ -572,9 +590,20 @@ class PortfolioApp(App[None]):
             sign = "+" if pnl >= 0 else ""
             return f"P&L: {sign}{pnl:.2f}%"
 
+        # With a selection, prefix the bar with "Selected N/M" so it's obvious the
+        # numbers are a subset; with none, the prefix is empty and the bar reads
+        # exactly as it always has.
+        selection_prefix = (
+            f"Selected {len(selected)}/{len(positions)}  |  " if selection_active else ""
+        )
+        total_label = self.query_one("#total", Label)
+        # `set_class(condition, name)` adds the CSS class when condition is True
+        # and removes it when False — portfolio.tcss recolours `#total.selection`.
+        total_label.set_class(selection_active, "selection")
+
         if self.hide_values:
-            self.query_one("#total", Label).update(
-                f"{_fmt_total_pnl(total_pnl_pct)}"
+            total_label.update(
+                f"{selection_prefix}{_fmt_total_pnl(pnl_pct)}"
                 f"  |  24h: {_fmt_delta(var_total, var_total_24h)}"
                 f"  |  1W: {_fmt_delta(var_total, var_total_1w)}"
                 f"  |  6M: {_fmt_delta(var_total, var_total_6m)}"
@@ -582,9 +611,9 @@ class PortfolioApp(App[None]):
                 f"  |  {ts} BRT"
             )
         else:
-            self.query_one("#total", Label).update(
-                f"Total: R${displayed_total:,.2f}"
-                f"  |  {_fmt_total_pnl(total_pnl_pct)}"
+            total_label.update(
+                f"{selection_prefix}Total: R${displayed_total:,.2f}"
+                f"  |  {_fmt_total_pnl(pnl_pct)}"
                 f"  |  24h: {_fmt_delta(var_total, var_total_24h)}"
                 f"  |  1W: {_fmt_delta(var_total, var_total_1w)}"
                 f"  |  6M: {_fmt_delta(var_total, var_total_6m)}"
@@ -602,6 +631,18 @@ class PortfolioApp(App[None]):
         """Called automatically when `self.snapshot` is assigned a new value."""
         if snapshot is None:
             return
+        # Drop selected tickers that no longer exist (e.g. a position was deleted).
+        # `&` is set intersection: keep only tickers present in both sets.
+        # `set_reactive` updates the value *without* calling its watcher, so we
+        # don't render twice — `_render()` below picks up the pruned value.
+        known = {pv.ticker for pv in snapshot.positions}
+        pruned = self.selected_tickers & known
+        if pruned != self.selected_tickers:
+            self.set_reactive(PortfolioApp.selected_tickers, pruned)
+        self._render()
+
+    def watch_selected_tickers(self, _: frozenset[str]) -> None:
+        """Called when rows are selected or deselected."""
         self._render()
 
     def watch_filter_exchange(self, _: str) -> None:

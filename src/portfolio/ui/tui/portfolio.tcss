@@ -44,6 +44,14 @@ Screen {
     border-top: solid $primary;    /* a 1-character-tall solid line above the bar */
 }
 
+/* `#total.selection` matches the status bar only while it has the "selection"
+ * class — app.py adds it when rows are selected in the Portfolio tab. The
+ * colour change signals that the totals cover a subset, not everything. */
+#total.selection {
+    color: $accent;
+    border-top: solid $accent;
+}
+
 /* `TabbedContent` fills all remaining vertical space between the header and total bar.
  * `1fr` means "take all available space not claimed by fixed-height siblings". */
 TabbedContent {
