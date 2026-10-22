@@ -27,6 +27,7 @@ import structlog
 import yfinance as yf
 
 from portfolio.core.exceptions import PriceFetchError
+from portfolio.core.models import IndexQuote
 
 log = structlog.get_logger()
 
@@ -291,3 +292,37 @@ async def fetch_fx_rates(currencies: list[str]) -> dict[str, float]:
         currency, rate = task.result()
         result[currency] = rate
     return result
+
+
+def _fetch_index_sync(ticker: str) -> IndexQuote:
+    """Fetch the current level and 24h change of a market index (blocking).
+
+    Much lighter than `_fetch_price_sync`: the index card only needs today's
+    points and the previous close, both available from `fast_info`, so we
+    skip the 1-year history download and the heavy `data.info` call.
+    """
+    info = yf.Ticker(ticker).fast_info
+    points = _safe_float(info.last_price)
+    if points is None:
+        raise PriceFetchError(f"No index level returned for {ticker}")
+
+    change_pct: float | None = None
+    prev_close = _safe_float(info.previous_close)
+    if prev_close:   # None and 0.0 are both "falsy", so this skips both
+        change_pct = (points - prev_close) / prev_close * 100.0
+    return IndexQuote(ticker=ticker, points=points, change_pct=change_pct)
+
+
+async def fetch_index_safe(ticker: str) -> IndexQuote | None:
+    """Fetch an index quote, returning None on failure instead of raising.
+
+    A missing benchmark must never stop the portfolio itself from refreshing,
+    so failures are logged as a warning and the card just shows "N/A".
+    """
+    try:
+        quote = await asyncio.to_thread(_fetch_index_sync, ticker)
+        log.debug("index_fetched", ticker=ticker, points=quote.points)
+        return quote
+    except Exception as exc:
+        log.warning("index_fetch_failed", ticker=ticker, error=str(exc))
+        return None

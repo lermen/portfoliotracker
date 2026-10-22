@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     # freshness with not hammering the Yahoo Finance API.
     refresh_interval_seconds: int = 30
 
+    # Yahoo Finance symbol of the index shown on the Summary tab as a benchmark.
+    # The `^` prefix is Yahoo's convention for indices: "^BVSP" is the Ibovespa,
+    # "^GSPC" the S&P 500. Override with BENCHMARK_TICKER in `.env`.
+    benchmark_ticker: str = "^BVSP"
+
     # `model_config` is a special Pydantic attribute (not a regular field).
     # `SettingsConfigDict` is a typed dictionary that configures pydantic-settings
     # behaviour — it gives IDE autocompletion and prevents typos in config keys.

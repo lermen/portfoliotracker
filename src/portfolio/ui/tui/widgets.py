@@ -952,6 +952,15 @@ def _bar(pct: float, width: int = 12) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
+# Display names for benchmark index tickers. Any ticker missing here is shown
+# as-is, so setting BENCHMARK_TICKER to something else still works.
+_INDEX_NAMES: dict[str, str] = {
+    "^BVSP": "IBOVESPA",
+    "^GSPC": "S&P 500",
+    "^GDAXI": "DAX",
+}
+
+
 class SummaryPanel(Widget):
     """Compose all summary sections into a single tab-fillable widget.
 
@@ -994,6 +1003,9 @@ class SummaryPanel(Widget):
             yield MetricCard(id="sum-1w", classes="summary-metric-card")
             yield MetricCard(id="sum-6m", classes="summary-metric-card")
             yield MetricCard(id="sum-12m", classes="summary-metric-card")
+            # Benchmark index card, placed beside the portfolio's own 24H card
+            # row so the two daily moves can be compared at a glance.
+            yield MetricCard(id="sum-index", classes="summary-metric-card")
 
         # --- Row 3: allocation + top movers ---
         with Horizontal(id="summary-mid"):
@@ -1033,6 +1045,7 @@ class SummaryPanel(Widget):
             ("sum-12m", "12M"),
         ):
             self.query_one(f"#{card_id}", MetricCard).set_metric(title, "—")
+        self.query_one("#sum-index", MetricCard).set_metric("INDEX", "—")
 
         self.query_one("#sum-alloc", Static).update("Allocation: loading…")
         self.query_one("#sum-gainers", Static).update("Top gainers: loading…")
@@ -1195,6 +1208,28 @@ class SummaryPanel(Widget):
                 subtitle_style = "dim"
             self.query_one(f"#{card_id}", MetricCard).set_metric(
                 label, value_str, subtitle, style, subtitle_style=subtitle_style,
+            )
+
+        # --- Performance strip: benchmark index ------------------------------
+        # Index points say nothing about the size of the portfolio, so unlike
+        # the R$ figures they stay visible in privacy mode.
+        bench = snapshot.benchmark
+        if bench is None:
+            self.query_one("#sum-index", MetricCard).set_metric("INDEX", "N/A")
+        else:
+            # `dict.get(key, default)`: a friendly name for known indices,
+            # otherwise just show the raw ticker.
+            title = _INDEX_NAMES.get(bench.ticker, bench.ticker)
+            if bench.change_pct is not None:
+                sign = "+" if bench.change_pct >= 0 else ""
+                subtitle = f"24h {sign}{bench.change_pct:.2f}%"
+                subtitle_style = _delta_color(bench.change_pct)
+            else:
+                subtitle = "24h N/A"
+                subtitle_style = "dim"
+            self.query_one("#sum-index", MetricCard).set_metric(
+                title, f"{bench.points:,.0f} pts", subtitle, "bold",
+                subtitle_style=subtitle_style,
             )
 
         # --- Allocation block ------------------------------------------------

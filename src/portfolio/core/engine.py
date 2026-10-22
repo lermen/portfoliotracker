@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 import structlog
 
 from portfolio.core.exceptions import PriceFetchError
-from portfolio.core.fetcher import fetch_all_prices, fetch_fx_rates
+from portfolio.core.fetcher import fetch_all_prices, fetch_fx_rates, fetch_index_safe
 from portfolio.core.models import PortfolioSnapshot, PositionValue
 from portfolio.core.reader import read_fixed_income, read_positions
 from portfolio.core.settings import settings
@@ -81,7 +81,15 @@ async def run_engine(
 
             # --- Step 2: Fetch live prices for all tickers concurrently ---
             # Returns {ticker: _PriceData} — all N tickers fetched in parallel.
-            prices = await fetch_all_prices(tickers)
+            # The benchmark index is fetched in the same TaskGroup so it adds no
+            # extra wait on top of the position prices.
+            async with asyncio.TaskGroup() as tg:
+                prices_task = tg.create_task(fetch_all_prices(tickers))
+                bench_task = tg.create_task(
+                    fetch_index_safe(settings.benchmark_ticker)
+                )
+            prices = prices_task.result()
+            benchmark = bench_task.result()
 
             # --- Step 3: Determine which currencies we need FX rates for ---
             # `data[6]` is the native_currency element of each _PriceData tuple (index 6).
@@ -203,6 +211,7 @@ async def run_engine(
                 ),
                 fixed_income=fixed_income,
                 fixed_income_total=fi_total,
+                benchmark=benchmark,
                 currency="BRL",
                 timestamp=datetime.now(UTC),   # UTC timestamp for timezone-safe comparisons
             )

@@ -174,6 +174,19 @@ class BitcoinMetrics(BaseModel):
     timestamp: datetime   # When this snapshot was created (UTC)
 
 
+class IndexQuote(BaseModel):
+    """A market index level, used as a benchmark to compare the portfolio against.
+
+    An index (like the Bovespa, ticker "^BVSP" on Yahoo Finance) is not a price
+    in a currency — it is a number of *points*. That's why this is a separate
+    model rather than a `PositionValue`: there is no quantity and no BRL value.
+    """
+
+    ticker: str                       # Yahoo Finance symbol, e.g. "^BVSP"
+    points: float                     # Current index level, e.g. 128_450.3
+    change_pct: float | None = None   # Change vs. the previous close, in %
+
+
 class PortfolioSnapshot(BaseModel):
     """A complete, point-in-time picture of the entire portfolio.
 
@@ -212,6 +225,10 @@ class PortfolioSnapshot(BaseModel):
     # without a None-check: `for fi in snapshot.fixed_income` always works.
     fixed_income: list[FixedIncomePosition] = []
     fixed_income_total: float = 0.0        # Sum of all fixed-income BRL amounts
+
+    # Benchmark index (Ibovespa by default). None when the fetch failed — the
+    # UI then shows "N/A" instead of the whole snapshot being discarded.
+    benchmark: IndexQuote | None = None
 
     currency: str = "BRL"                  # Reporting currency for value_brl fields (always BRL)
     timestamp: datetime                    # UTC timestamp of when the engine built this snapshot
