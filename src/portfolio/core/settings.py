@@ -21,6 +21,7 @@
 # overloading — you can write `Path("data") / "portfolio.xlsx"` instead of
 # `"data" + os.sep + "portfolio.xlsx"`.
 from pathlib import Path
+from typing import Literal
 
 # `pydantic-settings` extends Pydantic's `BaseModel` to also read field values
 # from environment variables and `.env` files. If an environment variable named
@@ -60,6 +61,12 @@ class Settings(BaseSettings):
     # The `^` prefix is Yahoo's convention for indices: "^BVSP" is the Ibovespa,
     # "^GSPC" the S&P 500. Override with BENCHMARK_TICKER in `.env`.
     benchmark_ticker: str = "^BVSP"
+
+    # Where the portfolio lives: "excel" (the local file at `excel_path`) or
+    # "gsheets" (the shared Google Sheet below). `Literal[...]` restricts the
+    # value to exactly these strings, so a typo like STORAGE_BACKEND=gsheet
+    # fails at startup with a clear error instead of misbehaving later.
+    storage_backend: Literal["excel", "gsheets"] = "excel"
 
     # The Google Sheet that will hold the portfolio, identified by the long ID in
     # its URL: docs.google.com/spreadsheets/d/<ID>/edit. `str | None` means the

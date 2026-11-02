@@ -45,7 +45,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--portfolio",
         metavar="PATH",
         default=None,
-        help="Portfolio file to update (default: the app's configured EXCEL_PATH).",
+        help=(
+            "Excel portfolio file to update (default: the store selected by "
+            "STORAGE_BACKEND — EXCEL_PATH or the Google Sheet)."
+        ),
     )
     # `action="store_true"` makes a flag: present → True, absent → False.
     import_parser.add_argument(

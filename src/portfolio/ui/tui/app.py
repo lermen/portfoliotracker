@@ -43,12 +43,7 @@ from portfolio.core.models import (
 )
 from portfolio.core.settings import settings
 from portfolio.core.totals import total_pnl_pct, value_before
-from portfolio.core.writer import (
-    add_position,
-    remove_position,
-    set_avg_price,
-    set_quantity,
-)
+from portfolio.core.store import get_store
 from portfolio.ui.tui.modals import (
     AddPositionModal,
     AvgPriceModal,
@@ -170,6 +165,11 @@ class PortfolioApp(App[None]):
         # only appear on the next scheduled refresh, up to 30 seconds later.
         self.refresh_event: asyncio.Event = asyncio.Event()
 
+        # Where the portfolio lives (Excel file or Google Sheet), chosen by
+        # STORAGE_BACKEND. Built once here and shared by the engine and the edit
+        # handlers below — the app never needs to know which backend it is.
+        self.store = get_store(settings)
+
     def compose(self) -> ComposeResult:
         """Declare the widget tree — what the screen is made of and how it nests.
 
@@ -223,7 +223,7 @@ class PortfolioApp(App[None]):
 
         # Start the portfolio engine as a background worker. We pass the refresh
         # event so in-app edits can trigger an immediate re-read of the file.
-        self.run_worker(run_engine(self.queue, self.refresh_event), exclusive=True)
+        self.run_worker(run_engine(self.queue, self.store, self.refresh_event), exclusive=True)
 
         # Start the Bitcoin metrics engine as a separate background worker.
         # `exclusive=False` allows it to coexist with the portfolio engine worker.
@@ -419,13 +419,13 @@ class PortfolioApp(App[None]):
 
         self.push_screen(ConfirmModal(f"Delete {ticker}?"), on_result)
 
-    # The `_apply_*` methods are async because the writer touches the filesystem.
+    # The `_apply_*` methods are async because the store does file or network I/O.
     # They run as Textual workers (background tasks) so the UI never freezes, and
     # they translate backend exceptions into friendly toast notifications.
 
     async def _apply_set_quantity(self, ticker: str, quantity: float) -> None:
         try:
-            await set_quantity(settings.excel_path, ticker, quantity)
+            await self.store.set_quantity(ticker, quantity)
         except Exception as exc:
             self.notify(f"Could not update {ticker}: {exc}", severity="error")
             return
@@ -434,7 +434,7 @@ class PortfolioApp(App[None]):
 
     async def _apply_set_avg_price(self, ticker: str, avg_price: float) -> None:
         try:
-            await set_avg_price(settings.excel_path, ticker, avg_price)
+            await self.store.set_avg_price(ticker, avg_price)
         except Exception as exc:
             self.notify(f"Could not update {ticker}: {exc}", severity="error")
             return
@@ -443,7 +443,7 @@ class PortfolioApp(App[None]):
 
     async def _apply_add_position(self, position: Position) -> None:
         try:
-            await add_position(settings.excel_path, position)
+            await self.store.add_position(position)
         except Exception as exc:
             self.notify(f"Could not add {position.ticker}: {exc}", severity="error")
             return
@@ -452,7 +452,7 @@ class PortfolioApp(App[None]):
 
     async def _apply_remove_position(self, ticker: str) -> None:
         try:
-            await remove_position(settings.excel_path, ticker)
+            await self.store.remove_position(ticker)
         except Exception as exc:
             self.notify(f"Could not delete {ticker}: {exc}", severity="error")
             return

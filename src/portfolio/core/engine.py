@@ -1,6 +1,6 @@
 # This module is the "engine" — the central coordinator that ties the entire
 # backend together. It runs in an infinite loop, orchestrating:
-#   1. Reading positions from Excel.
+#   1. Reading positions from the store (Excel file or Google Sheet).
 #   2. Fetching live prices for every ticker.
 #   3. Fetching the FX rates needed to convert prices to BRL.
 #   4. Computing per-position values and P&L.
@@ -29,14 +29,15 @@ import structlog
 from portfolio.core.exceptions import PriceFetchError
 from portfolio.core.fetcher import fetch_all_prices, fetch_fx_rates, fetch_index_safe
 from portfolio.core.models import PortfolioSnapshot, PositionValue
-from portfolio.core.reader import read_fixed_income, read_positions
 from portfolio.core.settings import settings
+from portfolio.core.store import PortfolioStore
 
 log = structlog.get_logger()
 
 
 async def run_engine(
     queue: asyncio.Queue[PortfolioSnapshot],
+    store: PortfolioStore,
     refresh_event: asyncio.Event | None = None,
 ) -> None:
     """Continuously refresh portfolio data and publish snapshots to the queue.
@@ -49,12 +50,16 @@ async def run_engine(
     tells type checkers (and human readers) exactly what type of object goes in
     and comes out. The queue is created in `app.py` and passed in here.
 
+    `store` is where the portfolio lives — an Excel file or a Google Sheet (see
+    store.py). The engine only calls its read methods, so it works the same
+    with either backend.
+
     `refresh_event` is an optional `asyncio.Event` — a simple flag two coroutines
     can use to signal each other. When the UI edits the spreadsheet it "sets" the
     event, which wakes this loop early (see the interruptible sleep at the bottom)
     so the change appears within a second instead of after the full refresh
     interval. It is optional so existing callers/tests that don't need instant
-    refresh can keep calling `run_engine(queue)` unchanged.
+    refresh can keep calling `run_engine(queue, store)` unchanged.
 
     The function signature uses `async def` because it uses `await` internally.
     Any function with `async def` must be called with `await` (or started as a
@@ -64,15 +69,15 @@ async def run_engine(
 
     while True:
         try:
-            # --- Step 1: Read both sheets concurrently from the Excel file ---
+            # --- Step 1: Read both sheets concurrently from the store ---
             # `asyncio.TaskGroup` is Python 3.11+'s structured concurrency primitive.
             # Both tasks start at the same time — `pos_task` and `fi_task` run in
             # parallel. The `async with` block blocks until both are done (or
             # cancels both if one raises). This is faster than awaiting them one
             # at a time, which would be sequential.
             async with asyncio.TaskGroup() as tg:
-                pos_task = tg.create_task(read_positions(settings.excel_path))
-                fi_task = tg.create_task(read_fixed_income(settings.excel_path))
+                pos_task = tg.create_task(store.read_positions())
+                fi_task = tg.create_task(store.read_fixed_income())
             positions = pos_task.result()     # list[Position] from the first sheet
             fixed_income = fi_task.result()   # list[FixedIncomePosition] from FixedIncome sheet
 
