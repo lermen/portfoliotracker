@@ -1,7 +1,8 @@
 # Portfolio Tracker
 
 A near-real-time terminal dashboard that reads your stock holdings from an Excel
-file and displays their current market value, refreshed automatically.
+file or a Google Sheet and displays their current market value, refreshed
+automatically.
 
 ---
 
@@ -9,12 +10,14 @@ file and displays their current market value, refreshed automatically.
 
 ### Data Pipeline
 
-Data flows in one direction: from your Excel file, through price fetching, into a
-queue that feeds any number of UI consumers independently.
+Data flows in one direction: from your portfolio store (Excel file or Google
+Sheet), through price fetching, into a queue that feeds any number of UI
+consumers independently.
 
 ```mermaid
 flowchart TD
-    A[portfolio.xlsx] --> B[reader.py\nParses Excel into Positions]
+    X[portfolio.xlsx] --> B[store.py\nExcelStore or GoogleSheetsStore]
+    Y[Google Sheet] --> B
     B --> C[fetcher.py\nFetches prices async via httpx]
     C --> D[engine.py\nComputes totals, builds PortfolioSnapshot]
     D --> E[asyncio.Queue]
@@ -87,33 +90,130 @@ source $HOME/.local/bin/env
    uv sync
    ```
 
-3. **(Optional) Configure settings** by copying the example env file:
+3. **Create your settings file** by copying the example:
 
    ```bash
    cp .env.example .env
    ```
 
-   Edit `.env` to change the Excel file path or refresh interval:
+   `.env` holds your local settings and is never committed to git:
+
+   | Setting | Default | Meaning |
+   |---|---|---|
+   | `STORAGE_BACKEND` | `excel` | Where the portfolio lives: `excel` or `gsheets` |
+   | `EXCEL_PATH` | `data/portfolio.xlsx` | The Excel file (when `STORAGE_BACKEND=excel`) |
+   | `GSHEETS_SPREADSHEET_ID` | — | The Google Sheet (when `STORAGE_BACKEND=gsheets`) |
+   | `REFRESH_INTERVAL_SECONDS` | `30` | Seconds between price refreshes |
+   | `BENCHMARK_TICKER` | `^BVSP` | Index shown on the Summary tab |
+
+   Settings are read at startup — restart the app after changing them.
+
+4. **Choose where your portfolio lives** — see the next section. If you only
+   use one computer, the Excel file works out of the box.
+
+---
+
+## Where your portfolio lives: Excel or Google Sheets
+
+| | Excel file (default) | Google Sheet |
+|---|---|---|
+| Best for | One computer | Several computers sharing the same data |
+| Setup | None — edit `data/portfolio.xlsx` | One-time Google setup, then two lines in `.env` per computer |
+| Edits | Saved to the local file | Saved to the shared sheet; other computers see them on their next refresh |
+
+Both use exactly the same layout (same tabs, same columns — see
+[Adding tickers](#adding-tickers-to-the-excel-file)). The TUI, the edit keys and
+the B3 import work the same with either one.
+
+### Google Sheets: one-time setup (done once, ever)
+
+You only do this the first time. If the sheet already exists and is shared with
+the service account, skip to [setting up a computer](#google-sheets-setting-up-a-computer).
+
+1. **Put the portfolio in Google Sheets.** Upload `data/portfolio.xlsx` to Google
+   Drive, open it, and choose **File → Save as Google Sheets**. Check that:
+   - there is **no `.XLSX` badge** next to the name (otherwise it's still an
+     Excel file and the API can't read it);
+   - the positions tab is **first**, and the fixed-income tab is named exactly
+     `FixedIncome`.
+2. **Create a Google Cloud project** (free, no billing needed) at
+   [console.cloud.google.com](https://console.cloud.google.com): project picker
+   → **New Project**.
+3. **Enable the Google Sheets API**: search "Google Sheets API" → **Enable**.
+4. **Create a service account** (a "robot" Google account the app logs in as):
+   search "Service Accounts" → **Create service account** → give it a name →
+   skip the roles step → **Done**.
+5. **Download its key**: open the service account → **Keys** → **Add key →
+   Create new key → JSON**. Keep this file safe — anyone who has it can edit
+   your sheet. Never commit it or send it by email/chat.
+6. **Share the sheet with the robot**: in the sheet, click **Share**, paste the
+   service account's email (the `client_email` in the key file, ending in
+   `.iam.gserviceaccount.com`), choose **Editor**, untick "Notify people".
+7. **Note the sheet ID** — the long part of the URL between `/d/` and `/edit`:
+   `https://docs.google.com/spreadsheets/d/`**`THIS_PART`**`/edit`
+
+### Google Sheets: setting up a computer
+
+Do this on every computer that runs the app (including the first one):
+
+1. **Get the code and install dependencies**:
+
+   ```bash
+   git clone https://github.com/lermen/portfoliotracker.git
+   cd portfoliotracker
+   uv sync
+   ```
+
+2. **Copy the key file** from the one-time setup (use a password manager or USB
+   stick) to `~/.config/portfolio/service-account.json`, and make it private:
+
+   ```bash
+   mkdir -p ~/.config/portfolio
+   mv /path/to/downloaded-key.json ~/.config/portfolio/service-account.json
+   chmod 600 ~/.config/portfolio/service-account.json
+   ```
+
+   (To keep it somewhere else, set `GSHEETS_CREDENTIALS_PATH` in `.env` to the
+   full path — `~` is not expanded there.)
+
+3. **Create `.env`** with the backend and your sheet ID:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   then edit it so it contains:
 
    ```
-   EXCEL_PATH=data/portfolio.xlsx
-   REFRESH_INTERVAL_SECONDS=30
+   STORAGE_BACKEND=gsheets
+   GSHEETS_SPREADSHEET_ID=your-sheet-id
    ```
+
+4. **Run it**: `uv run portfolio`. The totals should match what the other
+   computers show.
+
+To go back to the local Excel file at any time, set `STORAGE_BACKEND=excel`.
+If you edited the sheet since switching, first download it from Google Sheets
+(**File → Download → .xlsx**) and save it as `data/portfolio.xlsx`.
+
+> **Google's limits:** each refresh makes about 4 requests and Google allows 60
+> per minute, so any `REFRESH_INTERVAL_SECONDS` of 10 or more is safe.
 
 ---
 
 ## Adding tickers to the Excel file
 
-The tool reads from `data/portfolio.xlsx` by default. The file must follow this
+The tool reads from `data/portfolio.xlsx` by default (or from your Google Sheet
+when `STORAGE_BACKEND=gsheets` — same layout). The first tab must follow this
 structure:
 
-| Column A   | Column B | Column C  | Column D |
-|------------|----------|-----------|----------|
-| Ticker     | Quantity | Exchange  | Category |
-| AAPL       | 10       | NASDAQ    | Stock    |
-| PETR4.SA   | 100      | B3        | Stock    |
-| HGLG11.SA  | 50       | B3        | FII      |
-| SAP.DE     | 20       | Frankfurt | Stock    |
+| Column A   | Column B | Column C  | Column D | Column E      |
+|------------|----------|-----------|----------|---------------|
+| Ticker     | Quantity | Exchange  | Category | Average Price |
+| AAPL       | 10       | NASDAQ    | Stock    | 150.00        |
+| PETR4.SA   | 100      | B3        | Stock    | 32.10         |
+| HGLG11.SA  | 50       | B3        | FII      |               |
+| SAP.DE     | 20       | Frankfurt | Stock    | 180.50        |
 
 **Rules:**
 
@@ -126,7 +226,12 @@ structure:
   `Frankfurt`). Optional — leave blank if not needed.
 - **Column D** — asset category for display purposes only (e.g. `Stock`, `FII`,
   `ETF`, `Crypto`). Optional — leave blank if not needed.
+- **Column E** — your average purchase price, in the asset's own currency. Used
+  for P&L. Optional — leave blank and P&L shows `----`.
 - Blank rows are ignored.
+
+A second tab named **`FixedIncome`** (optional) holds fixed-income positions:
+column A is a name, column B the current amount in BRL.
 
 ### Ticker format by exchange
 
@@ -159,9 +264,13 @@ include the correct suffix for non-US assets:
 
 ### How to edit the file
 
-Open `data/portfolio.xlsx` with any spreadsheet application (Excel, LibreOffice
-Calc, Numbers) and edit the rows. Save the file before launching the tracker —
-it re-reads the file on each refresh cycle.
+Use the editing keys inside the app (see [Running the tracker](#running-the-tracker)),
+or edit the data directly:
+
+- **Excel:** open `data/portfolio.xlsx` in any spreadsheet application and save.
+- **Google Sheets:** edit the sheet in your browser — it saves automatically.
+
+The tracker re-reads the data on each refresh cycle.
 
 ---
 
@@ -181,7 +290,8 @@ uv run portfolio import posicao-2026-07-11-11-28-57.xlsx
 
 The importer reads the export, matches each ticker against your portfolio
 (`ITSA4` in the export ↔ `ITSA4.SA` in the file), and updates the quantities to
-match. It shows a plan and waits for your confirmation before writing.
+match. It updates whichever store `STORAGE_BACKEND` selects — the Excel file or
+the Google Sheet (the output's `Target:` line tells you which). It shows a plan and waits for your confirmation before writing.
 
 ### What it reads
 
@@ -197,7 +307,7 @@ ticker (track them in the `FixedIncome` sheet instead).
 | `--dry-run` | Show the plan but write nothing. |
 | `-y`, `--yes` | Apply without the interactive confirmation prompt (for scripts). |
 | `--add-new` | Also add tickers found in the export but missing from your portfolio. |
-| `--portfolio PATH` | Portfolio file to update (default: the configured `EXCEL_PATH`). |
+| `--portfolio PATH` | Update this Excel file instead (default: the store selected by `STORAGE_BACKEND`). |
 
 ### Example output
 
@@ -231,6 +341,10 @@ Apply these changes? [y/N]
 - **Additions are opt-in** — new tickers are only added with `--add-new`.
 - **Non-destructive to your data** — only the `Quantity` cells change; your
   `Average Price` column, other rows, and the `FixedIncome` sheet are preserved.
+- **Google Sheets rate limit** — each update takes about 3 requests and Google
+  allows 60 per minute, so an import with more than ~20 updates may stop with a
+  "rate limit reached" error. Updates already made are kept; wait a minute and
+  run the import again — it only applies what's still different.
 
 ---
 
@@ -271,8 +385,8 @@ Prices refresh automatically every 30 seconds (or whatever is set in `.env`).
 | `A` | Add a new position |
 | `D` | Delete the selected position |
 
-> Editing keys (`u`, `P`, `A`, `D`) write straight to `data/portfolio.xlsx` and
-> the table refreshes within a second. `P`, `A`, and `D` use capital letters
+> Editing keys (`u`, `P`, `A`, `D`) write straight to your portfolio (the Excel
+> file or the Google Sheet) and the table refreshes within a second. `P`, `A`, and `D` use capital letters
 > (Shift+key); `u` works with or without Shift.
 
 ---
@@ -296,6 +410,24 @@ The Excel file is missing, open in another application with a write lock, or
 does not follow the expected column layout. Close the file in other apps and
 verify columns A (Ticker) and B (Quantity) are populated from row 2 onward.
 Columns C (Exchange) and D (Category) are optional.
+
+**"Google Sheets error 403: share the sheet with …"**
+The sheet isn't shared with the service account. In the sheet click **Share**
+and add the email shown in the message as **Editor**.
+
+**"Sheet … not found"**
+`GSHEETS_SPREADSHEET_ID` in `.env` is wrong, or the sheet isn't shared with the
+service account. Copy the ID again from the sheet's URL.
+
+**"the file is still an .xlsx"**
+The sheet in Drive is an uploaded Excel file, not a Google Sheet. Open it, choose
+**File → Save as Google Sheets**, share the new copy with the service account,
+and put the new ID in `.env`.
+
+**"Google credentials file not found"**
+The key file isn't at `~/.config/portfolio/service-account.json` (or at
+`GSHEETS_CREDENTIALS_PATH`). Copy it there — see
+[setting up a computer](#google-sheets-setting-up-a-computer).
 
 **Prices are stale**
 The refresh interval is controlled by `REFRESH_INTERVAL_SECONDS` in `.env`.
