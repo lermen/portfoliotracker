@@ -14,6 +14,7 @@
 # async/await syntax. "Concurrent" means multiple things can be in progress at
 # the same time, even though Python typically runs one thread at a time.
 import asyncio
+from collections.abc import Sequence
 from pathlib import Path
 
 # `openpyxl` is a third-party library for reading and writing Excel (.xlsx) files.
@@ -31,6 +32,75 @@ from portfolio.core.models import FixedIncomePosition, Position
 # file to emit log events. Structured loggers let you attach arbitrary context:
 #   log.info("event_name", key=value, another_key=value)
 log = structlog.get_logger()
+
+
+# --- row helpers shared by every storage backend --------------------------------
+#
+# Excel (openpyxl) and Google Sheets (gspread) both hand us a sheet as a list of
+# rows, where each row is a sequence of cell values. They differ in one detail:
+# openpyxl reports an empty cell as `None`, while gspread reports it as `""`.
+# These helpers accept either, so both backends turn rows into models the same way.
+#
+# `Sequence[object]` is the type of "anything indexable with a length" — a tuple
+# (what openpyxl gives) or a list (what gspread gives) both qualify. `object`
+# means each cell can be any value: str, int, float, None...
+
+
+def _is_blank(value: object) -> bool:
+    """True for an empty cell, whichever backend it came from."""
+    return value is None or (isinstance(value, str) and value.strip() == "")
+
+
+def _cell(row: Sequence[object], index: int) -> object:
+    """Return the cell at `index`, or None if the row is shorter than that.
+
+    Rows can be short: gspread drops trailing empty cells, so a row with no Avg
+    Price arrives with 4 values instead of 5.
+    """
+    return row[index] if index < len(row) else None
+
+
+def _to_float(value: object) -> float:
+    """Convert a numeric cell to float.
+
+    `float()` accepts numbers and numeric strings; anything else (e.g. a date
+    cell) raises `ValueError`, which the backend wraps in its own error type.
+    """
+    if isinstance(value, (int, float, str)):
+        return float(value)
+    raise ValueError(f"Expected a number, got {value!r}")
+
+
+def row_to_position(row: Sequence[object]) -> Position | None:
+    """Turn one positions-sheet row into a `Position`, or None to skip the row.
+
+    Columns: A Ticker, B Quantity, C Exchange, D Category, E Avg Price.
+    Rows with a blank ticker or quantity are skipped — sheets often contain
+    trailing empty rows.
+    """
+    ticker, quantity = _cell(row, 0), _cell(row, 1)
+    if _is_blank(ticker) or _is_blank(quantity):
+        return None
+
+    exchange, category, avg = _cell(row, 2), _cell(row, 3), _cell(row, 4)
+    # Pydantic validates each field when `Position(...)` is called.
+    # If `quantity` is <= 0, Pydantic raises a `ValidationError` automatically
+    # because of the `Field(gt=0)` constraint in the model.
+    return Position(
+        ticker=str(ticker).strip(),
+        quantity=_to_float(quantity),
+        exchange="" if _is_blank(exchange) else str(exchange).strip(),
+        category="" if _is_blank(category) else str(category).strip(),
+        avg_price_native=None if _is_blank(avg) else _to_float(avg),
+    )
+
+
+def row_to_fixed_income(row: Sequence[object]) -> FixedIncomePosition | None:
+    """Turn one FixedIncome-sheet row (A Name, B Amount) into a model, or None."""
+    name, amount = _cell(row, 0), _cell(row, 1)
+    if _is_blank(name) or _is_blank(amount):
+        return None
+    return FixedIncomePosition(name=str(name).strip(), amount_brl=_to_float(amount))
 
 
 def _parse_excel(path: Path) -> list[Position]:
@@ -70,38 +140,10 @@ def _parse_excel(path: Path) -> list[Position]:
         # subsequent row as a tuple of cell values.
         # `values_only=True` gives us the raw Python values rather than Cell objects.
         for row in ws.iter_rows(min_row=2, values_only=True):
-            ticker, quantity = row[0], row[1]
-
-            # Skip completely empty rows — openpyxl includes trailing blank rows
-            # at the end of the sheet even if no data was entered there.
-            if ticker is None or quantity is None:
-                continue
-
-            # `len(row) > 2` guards against rows that have fewer columns than expected.
-            # The `and row[2] is not None` check prevents calling `.strip()` on None,
-            # which would raise an `AttributeError`.
-            exchange = (
-                str(row[2]).strip() if len(row) > 2 and row[2] is not None else ""
-            )
-            category = (
-                str(row[3]).strip() if len(row) > 3 and row[3] is not None else ""
-            )
-            avg_price_native = (
-                float(row[4]) if len(row) > 4 and row[4] is not None else None
-            )
-
-            # Pydantic validates each field when `Position(...)` is called.
-            # If `quantity` is <= 0, Pydantic raises a `ValidationError` automatically
-            # because of the `Field(gt=0)` constraint in the model.
-            positions.append(
-                Position(
-                    ticker=str(ticker).strip(),
-                    quantity=float(quantity),
-                    exchange=exchange,
-                    category=category,
-                    avg_price_native=avg_price_native,
-                )
-            )
+            # `:=` is the "walrus operator": it assigns and tests in one step.
+            # Blank rows come back as None and are skipped.
+            if (position := row_to_position(row)) is not None:
+                positions.append(position)
 
         wb.close()
         log.info("excel_parsed", path=str(path), count=len(positions))
@@ -143,15 +185,8 @@ def _parse_fixed_income(path: Path) -> list[FixedIncomePosition]:
         items: list[FixedIncomePosition] = []
 
         for row in ws.iter_rows(min_row=2, values_only=True):
-            name, amount = row[0], row[1]
-            if name is None or amount is None:
-                continue
-            items.append(
-                FixedIncomePosition(
-                    name=str(name).strip(),
-                    amount_brl=float(amount),
-                )
-            )
+            if (item := row_to_fixed_income(row)) is not None:
+                items.append(item)
 
         wb.close()
         log.info("fixed_income_parsed", path=str(path), count=len(items))

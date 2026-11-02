@@ -33,7 +33,20 @@
 # placeholder meaning "nothing extra needed here".
 
 
-class ExcelParseError(Exception):
+class StorageError(Exception):
+    """Raised when the portfolio cannot be read from or written to its store.
+
+    The portfolio can live in a local Excel file or in a Google Sheet (see
+    `store.py`). This is the *parent* class for problems with either one, so a
+    caller that doesn't care which backend is in use can simply write
+    `except StorageError:` and catch them all.
+    """
+
+
+# `class ExcelParseError(StorageError)` — the name in parentheses is the parent
+# class. An `ExcelParseError` therefore *is a* `StorageError`, and
+# `except StorageError:` catches it too. This is called an exception hierarchy.
+class ExcelParseError(StorageError):
     """Raised when the Excel file cannot be opened, read, or parsed.
 
     Examples of when this is raised:

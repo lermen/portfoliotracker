@@ -1,4 +1,4 @@
-# The `import` command: sync the portfolio spreadsheet from a B3 "posição" export.
+# The `import` command: sync the portfolio from a B3 "posição" export.
 #
 # This is the *frontend* for the import feature. It owns everything the user sees
 # and touches — printing the plan, asking for confirmation, exit codes — and
@@ -14,9 +14,10 @@
 import asyncio
 from pathlib import Path
 
-from portfolio.core.exceptions import ExcelParseError
+from portfolio.core.exceptions import ConfigError, StorageError
 from portfolio.core.importer import ImportPlan, apply_plan, build_plan
 from portfolio.core.settings import settings
+from portfolio.core.store import ExcelStore, PortfolioStore, get_store
 
 
 def _fmt_qty(quantity: float) -> str:
@@ -25,11 +26,11 @@ def _fmt_qty(quantity: float) -> str:
 
 
 def _print_plan(
-    plan: ImportPlan, export_path: Path, portfolio_path: Path, add_new: bool
+    plan: ImportPlan, export_path: Path, target: str, add_new: bool
 ) -> None:
     """Print a human-readable summary of what the import would change."""
     print(f"\nPortfolio import — {export_path.name}")
-    print(f"Target: {portfolio_path}\n")
+    print(f"Target: {target}\n")
 
     # --- Quantity updates ---
     print(f"Quantity updates ({len(plan.updates)}):")
@@ -78,24 +79,35 @@ def run(
     Flow: build the plan → show it → (unless --dry-run) confirm → apply.
     """
     export_path = Path(export_file)
-    portfolio_path = Path(portfolio) if portfolio else settings.excel_path
-
     if not export_path.exists():
         print(f"Error: export file not found: {export_path}")
         return 1
-    if not portfolio_path.exists():
-        print(f"Error: portfolio file not found: {portfolio_path}")
+
+    # `--portfolio FILE` always means a local Excel file; otherwise use whichever
+    # store STORAGE_BACKEND selects (Excel file or Google Sheet).
+    try:
+        store: PortfolioStore = (
+            ExcelStore(Path(portfolio)) if portfolio else get_store(settings)
+        )
+    except ConfigError as exc:
+        print(f"Error: {exc}")
+        return 1
+    # `isinstance` checks the store's actual class: only a file can be missing.
+    if isinstance(store, ExcelStore) and not store.path.exists():
+        print(f"Error: portfolio file not found: {store.path}")
         return 1
 
     try:
         # `asyncio.run` starts an event loop, runs the coroutine to completion,
         # and cleans up — the standard way to call async code from sync code.
-        plan = asyncio.run(build_plan(export_path, portfolio_path))
-    except ExcelParseError as exc:
+        plan = asyncio.run(build_plan(export_path, store))
+    # Catches problems with the B3 export *and* the portfolio store, because
+    # `ExcelParseError` is a subclass of `StorageError` (see exceptions.py).
+    except StorageError as exc:
         print(f"Error: {exc}")
         return 1
 
-    _print_plan(plan, export_path, portfolio_path, add_new)
+    _print_plan(plan, export_path, store.description, add_new)
 
     # Decide whether there is anything to do given the flags.
     will_add = add_new and bool(plan.additions)
@@ -115,7 +127,7 @@ def run(
             return 0
 
     try:
-        asyncio.run(apply_plan(plan, portfolio_path, add_new=add_new))
+        asyncio.run(apply_plan(plan, store, add_new=add_new))
     except Exception as exc:
         print(f"Error while applying changes: {exc}")
         return 1

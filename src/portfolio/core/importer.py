@@ -30,8 +30,7 @@ import structlog
 
 from portfolio.core.exceptions import ExcelParseError
 from portfolio.core.models import Position
-from portfolio.core.reader import read_positions
-from portfolio.core.writer import add_position, set_quantity
+from portfolio.core.store import PortfolioStore
 
 log = structlog.get_logger()
 
@@ -189,15 +188,15 @@ def _parse_b3_export(path: Path) -> dict[str, ExportEntry]:
     return entries
 
 
-async def build_plan(export_path: Path, portfolio_path: Path) -> ImportPlan:
+async def build_plan(export_path: Path, store: PortfolioStore) -> ImportPlan:
     """Compare a B3 export against the portfolio and return the changes to make.
 
     Reads nothing destructively — this only *computes* the plan. The heavy file
     reads run off the event loop: `_parse_b3_export` via `asyncio.to_thread`, and
-    the portfolio via the existing async `read_positions`.
+    the portfolio via the store's async `read_positions`.
     """
     export = await asyncio.to_thread(_parse_b3_export, export_path)
-    positions = await read_positions(portfolio_path)
+    positions = await store.read_positions()
 
     # Index the current portfolio by its bare (suffix-stripped) ticker so we can
     # match "ITSA4.SA" in the file against "ITSA4" in the export.
@@ -240,20 +239,20 @@ async def build_plan(export_path: Path, portfolio_path: Path) -> ImportPlan:
 
 
 async def apply_plan(
-    plan: ImportPlan, portfolio_path: Path, add_new: bool = False
+    plan: ImportPlan, store: PortfolioStore, add_new: bool = False
 ) -> None:
-    """Write a plan's changes to the portfolio spreadsheet via the writer.
+    """Write a plan's changes to the portfolio via the store.
 
     Quantity updates are always applied. New tickers are only added when
     `add_new` is True, because adding a position makes structural changes (and
     guesses the category) that the user should opt into explicitly.
     """
     for change in plan.updates:
-        await set_quantity(portfolio_path, change.ticker, change.new_quantity)
+        await store.set_quantity(change.ticker, change.new_quantity)
 
     if add_new:
         for position in plan.additions:
-            await add_position(portfolio_path, position)
+            await store.add_position(position)
 
     log.info(
         "import_applied",

@@ -15,6 +15,7 @@ from portfolio.core.importer import (
     apply_plan,
     build_plan,
 )
+from portfolio.core.store import ExcelStore
 
 
 def _make_b3_export(path: Path) -> None:
@@ -121,7 +122,7 @@ def test_parse_category_priority(export_path: Path) -> None:
 
 
 async def test_build_plan(export_path: Path, portfolio_path: Path) -> None:
-    plan = await build_plan(export_path, portfolio_path)
+    plan = await build_plan(export_path, ExcelStore(portfolio_path))
 
     updates = {c.ticker: (c.old_quantity, c.new_quantity) for c in plan.updates}
     assert updates == {
@@ -147,8 +148,8 @@ async def test_build_plan(export_path: Path, portfolio_path: Path) -> None:
 async def test_apply_plan_updates_only_without_add_new(
     export_path: Path, portfolio_path: Path
 ) -> None:
-    plan = await build_plan(export_path, portfolio_path)
-    await apply_plan(plan, portfolio_path, add_new=False)
+    plan = await build_plan(export_path, ExcelStore(portfolio_path))
+    await apply_plan(plan, ExcelStore(portfolio_path), add_new=False)
 
     rows = _rows(portfolio_path)
     assert rows["FLRY3.SA"] == 2060
@@ -163,8 +164,8 @@ async def test_apply_plan_updates_only_without_add_new(
 async def test_apply_plan_with_add_new(
     export_path: Path, portfolio_path: Path
 ) -> None:
-    plan = await build_plan(export_path, portfolio_path)
-    await apply_plan(plan, portfolio_path, add_new=True)
+    plan = await build_plan(export_path, ExcelStore(portfolio_path))
+    await apply_plan(plan, ExcelStore(portfolio_path), add_new=True)
 
     rows = _rows(portfolio_path)
     assert rows["RECR12.SA"] == 47        # now added
@@ -172,8 +173,8 @@ async def test_apply_plan_with_add_new(
 
 async def test_idempotent_second_run(export_path: Path, portfolio_path: Path) -> None:
     # Applying, then re-planning, should show no further quantity updates.
-    plan = await build_plan(export_path, portfolio_path)
-    await apply_plan(plan, portfolio_path, add_new=False)
+    plan = await build_plan(export_path, ExcelStore(portfolio_path))
+    await apply_plan(plan, ExcelStore(portfolio_path), add_new=False)
 
-    plan2 = await build_plan(export_path, portfolio_path)
+    plan2 = await build_plan(export_path, ExcelStore(portfolio_path))
     assert plan2.updates == []
