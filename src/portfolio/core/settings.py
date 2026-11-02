@@ -61,6 +61,18 @@ class Settings(BaseSettings):
     # "^GSPC" the S&P 500. Override with BENCHMARK_TICKER in `.env`.
     benchmark_ticker: str = "^BVSP"
 
+    # The Google Sheet that will hold the portfolio, identified by the long ID in
+    # its URL: docs.google.com/spreadsheets/d/<ID>/edit. `str | None` means the
+    # field is optional — `None` until you opt in by setting it in `.env`.
+    gsheets_spreadsheet_id: str | None = None
+
+    # The service account's JSON key file. It is a secret, so it lives outside
+    # the repo. `Path.home()` resolves `~` to your home directory at runtime
+    # (a plain Path("~/...") would NOT expand the `~`).
+    gsheets_credentials_path: Path = (
+        Path.home() / ".config" / "portfolio" / "service-account.json"
+    )
+
     # `model_config` is a special Pydantic attribute (not a regular field).
     # `SettingsConfigDict` is a typed dictionary that configures pydantic-settings
     # behaviour — it gives IDE autocompletion and prevents typos in config keys.

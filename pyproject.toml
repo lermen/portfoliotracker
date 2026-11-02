@@ -12,6 +12,8 @@ dependencies = [
     "yfinance>=0.2",
     "textual>=0.70",
     "structlog>=24.0",
+    "gspread>=6.2.1",
+    "google-auth>=2.62.0",
 ]
 
 [project.scripts]
