@@ -122,7 +122,7 @@ source $HOME/.local/bin/env
 | Edits | Saved to the local file | Saved to the shared sheet; other computers see them on their next refresh |
 
 Both use exactly the same layout (same tabs, same columns — see
-[Adding tickers](#adding-tickers-to-the-excel-file)). The TUI, the edit keys and
+[Adding tickers](#adding-tickers-to-your-portfolio)). The TUI, the edit keys and
 the B3 import work the same with either one.
 
 ### Google Sheets: one-time setup (done once, ever)
@@ -201,11 +201,12 @@ If you edited the sheet since switching, first download it from Google Sheets
 
 ---
 
-## Adding tickers to the Excel file
+## Adding tickers to your portfolio
 
-The tool reads from `data/portfolio.xlsx` by default (or from your Google Sheet
-when `STORAGE_BACKEND=gsheets` — same layout). The first tab must follow this
-structure:
+Your portfolio is a spreadsheet — the Excel file `data/portfolio.xlsx`, or your
+Google Sheet when `STORAGE_BACKEND=gsheets`. Both use exactly the same layout,
+so everything in this section applies to either one. The first tab must follow
+this structure:
 
 | Column A   | Column B | Column C  | Column D | Column E      |
 |------------|----------|-----------|----------|---------------|
@@ -262,15 +263,23 @@ include the correct suffix for non-US assets:
 > Prices are sourced from **Yahoo Finance** via `yfinance`. Any ticker that works
 > on finance.yahoo.com should work here, including ETFs, FIIs, and crypto pairs.
 
-### How to edit the file
+### How to add or edit tickers
 
-Use the editing keys inside the app (see [Running the tracker](#running-the-tracker)),
-or edit the data directly:
+Pick whichever is easiest — all of them work with both Excel and Google Sheets:
 
-- **Excel:** open `data/portfolio.xlsx` in any spreadsheet application and save.
-- **Google Sheets:** edit the sheet in your browser — it saves automatically.
+- **Inside the app:** press `A` to add a position, `u` to change a quantity,
+  `P` for the average price, `D` to delete (see
+  [Running the tracker](#running-the-tracker)). The app writes the change to
+  whichever store you use.
+- **Excel:** open `data/portfolio.xlsx` in any spreadsheet application, add a
+  row at the bottom of the first tab, and save.
+- **Google Sheets:** open the sheet in your browser and add a row at the bottom
+  of the first tab — it saves automatically, and every computer picks it up.
+- **From your broker:** sync quantities from a B3 export (see
+  [Importing positions](#importing-positions-from-a-broker-export-b3)).
 
-The tracker re-reads the data on each refresh cycle.
+The tracker re-reads the data on each refresh cycle, so new rows appear within
+`REFRESH_INTERVAL_SECONDS`. Edits made in the app show up immediately.
 
 ---
 
@@ -361,8 +370,8 @@ bottom.
 | Column | Description |
 |---|---|
 | Ticker | Stock symbol (with exchange suffix where applicable) |
-| Exchange | Exchange name as entered in the Excel file |
-| Category | Asset category as entered in the Excel file |
+| Exchange | Exchange name as entered in your spreadsheet |
+| Category | Asset category as entered in your spreadsheet |
 | Quantity | Number of shares held |
 | Price | Latest market price |
 | Value | Quantity × Price |
