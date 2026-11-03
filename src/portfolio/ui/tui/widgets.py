@@ -6,6 +6,7 @@
 #
 # Widgets in this file:
 #   PieChart          — a custom rendered circular chart using Unicode block characters
+#   PnLBarChart       — horizontal bars of each position's P&L % (gains right)
 #   MetricCard        — a bordered card showing one metric (title + value + subtitle)
 #   BitcoinMetricsPanel — a panel composing multiple MetricCards for the Bitcoin tab
 #   PortfolioTable    — a DataTable subclass that knows how to render a PortfolioSnapshot
@@ -302,6 +303,125 @@ class PieChart(Widget):
                 segments.append(Segment(" " * legend_w))  # blank legend row
 
         # `adjust_cell_length(w)` pads/trims the strip to exactly `w` cells wide.
+        return Strip(segments).adjust_cell_length(w)
+
+
+def _fit_rows(
+    bars: list[tuple[str, float]], height: int
+) -> list[tuple[str, float] | int]:
+    """Pick which bars to draw when there are more bars than rows.
+
+    Returns the rows to draw, top to bottom. A bar is a `(label, pnl_pct)` tuple;
+    an `int` marks the "… N more" gap row and holds how many bars were skipped.
+
+    `bars` arrives sorted best-to-worst, so the interesting rows are at both
+    ends — the biggest winners and the biggest losers. When space runs out we
+    keep the top and bottom and drop the middle, rather than cutting off the
+    losers at the bottom of the screen.
+
+    `tuple[str, float] | int` in the return type is a union: each list item is
+    either a bar tuple or an int. Callers tell them apart with `isinstance`.
+    """
+    if len(bars) <= height:
+        return list(bars)   # everything fits — `list(...)` makes a typed copy
+    if height < 3:
+        return list(bars[:height])   # too small for top + gap + bottom
+    # One row goes to the gap marker; split the rest between top and bottom.
+    # `//` is integer division (rounds down), so `top` gets the extra row when odd.
+    room = height - 1
+    bottom = room // 2
+    top = room - bottom
+    skipped = len(bars) - top - bottom
+    # `bars[-bottom:]` is a negative slice: the last `bottom` items.
+    return [*bars[:top], skipped, *bars[-bottom:]]
+
+
+class PnLBarChart(Widget):
+    """Horizontal diverging bar chart of each position's unrealised P&L %.
+
+    One row per position, sorted best to worst. Gains grow right from a zero
+    axis in green, losses grow left in red:
+
+        PETR4.SA          │██████████    +42.10%
+        AAPL              │███            +8.30%
+        MXRF11.SA     ████│              -12.50%
+
+    Like `PieChart`, it draws itself one terminal row at a time in
+    `render_line`. It only shows percentages, never R$ amounts, so it looks the
+    same with privacy mode ('h') on or off.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._bars: list[tuple[str, float]] = []   # (ticker, pnl_pct), best first
+
+    def set_data(self, positions: Sequence[PositionValue]) -> None:
+        """Rebuild the bars from the positions currently shown in the table.
+
+        Positions without an average price have no P&L, so they are left out —
+        the border subtitle says how many, so a missing bar isn't a mystery.
+        """
+        bars = [(pv.ticker, pv.pnl_pct) for pv in positions if pv.pnl_pct is not None]
+        self._bars = sorted(bars, key=lambda b: b[1], reverse=True)
+
+        missing = len(positions) - len(bars)
+        # `border_subtitle` is text Textual draws in the bottom edge of the border.
+        self.border_subtitle = f"{missing} without avg price" if missing else ""
+        self.refresh()
+
+    def render_line(self, y: int) -> Strip:
+        """Render terminal row `y`: label, bar area with a zero axis, percentage."""
+        w = self.size.width
+        rows = _fit_rows(self._bars, self.size.height)
+        if y >= len(rows) or w == 0:
+            return Strip.blank(w)
+
+        row = rows[y]
+        if isinstance(row, int):
+            # The gap row between winners and losers when not everything fits.
+            gap = Segment(f" … {row} more", Style(dim=True))
+            return Strip([gap]).adjust_cell_length(w)
+
+        # Column widths: ticker label on the left, "+123.45%" on the right,
+        # and whatever is left in between for the bars.
+        label_w = min(12, max(len(t) for t, _ in self._bars))
+        value_w = 9
+        bar_w = max(2, w - label_w - value_w - 3)   # 3 = spaces around the bar area
+
+        # Every bar shares one scale so lengths are comparable between rows.
+        # The zero axis goes where the scale crosses zero: on the far left when
+        # everything is a gain, on the far right when everything is a loss.
+        values = [v for _, v in self._bars]
+        pos_max = max(max(values), 0.0)
+        neg_max = max(-min(values), 0.0)
+        span = (pos_max + neg_max) or 1.0   # `or 1.0` avoids dividing by 0 if all are 0
+        left_w = round(bar_w * neg_max / span)   # cells reserved for losses
+        right_w = bar_w - left_w                 # cells reserved for gains
+
+        label, pnl = row
+        # `math.ceil` rounds up so a tiny non-zero P&L still gets one visible cell.
+        length = math.ceil(abs(pnl) / span * bar_w) if pnl else 0
+        color = COLOR_UP if pnl >= 0 else COLOR_DOWN
+        bar_style = Style(color=color)
+        axis = Segment("│", Style(dim=True))   # the zero line
+
+        if pnl >= 0:
+            left = Segment(" " * left_w)
+            right = Segment("█" * min(length, right_w), bar_style)
+            right_pad = Segment(" " * (right_w - min(length, right_w)))
+            bar_segments = [left, axis, right, right_pad]
+        else:
+            length = min(length, left_w)
+            left_pad = Segment(" " * (left_w - length))
+            left = Segment("█" * length, bar_style)
+            bar_segments = [left_pad, left, axis, Segment(" " * right_w)]
+
+        sign = "+" if pnl >= 0 else ""
+        segments = [
+            Segment(f" {label[:label_w]:<{label_w}} "),
+            *bar_segments,   # `*` unpacks the list into this one
+            Segment(f"{sign}{pnl:.2f}%".rjust(value_w), Style(color=color)),
+        ]
         return Strip(segments).adjust_cell_length(w)
 
 
