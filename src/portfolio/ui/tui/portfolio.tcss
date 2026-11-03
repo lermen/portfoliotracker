@@ -82,6 +82,19 @@ PieChart {
     height: 1fr;
 }
 
+/* The Chart tab's row holding the pie and the P&L bars side by side.
+ * Equal `1fr` widths split the row in half; each chart gets a titled border
+ * (the titles are set in app.py with `border_title`). */
+#chart-row {
+    height: 1fr;
+}
+
+#pie, #pnl-bars {
+    width: 1fr;
+    height: 1fr;
+    border: solid $primary;
+}
+
 BitcoinMetricsPanel {
     height: 1fr;
 }

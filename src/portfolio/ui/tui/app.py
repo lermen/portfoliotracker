@@ -23,6 +23,7 @@ from zoneinfo import (
 )
 
 from textual.app import App, ComposeResult
+from textual.containers import Horizontal
 from textual.reactive import reactive
 from textual.widgets import (
     Footer,
@@ -54,6 +55,7 @@ from portfolio.ui.tui.widgets import (
     BitcoinMetricsPanel,
     FixedIncomeTable,
     PieChart,
+    PnLBarChart,
     PortfolioTable,
     SummaryPanel,
 )
@@ -197,8 +199,19 @@ class PortfolioApp(App[None]):
                 yield PortfolioTable(id="table")
             with TabPane("Fixed Income", id="tab-fixed-income"):
                 yield FixedIncomeTable(id="fi-table")
-            with TabPane("Chart", id="tab-chart"):
-                yield PieChart(id="pie")
+            # Two charts side by side: where the money is (allocation) and how
+            # each holding is doing (P&L). `Horizontal` lays its children out left
+            # to right; their widths come from portfolio.tcss. Listing two context
+            # managers in one `with`, separated by a comma, is the same as nesting
+            # one `with` inside the other.
+            with TabPane("Chart", id="tab-chart"), Horizontal(id="chart-row"):
+                pie = PieChart(id="pie")
+                # `border_title` is drawn in the top edge of the widget's border.
+                pie.border_title = "Allocation by category"
+                yield pie
+                bars = PnLBarChart(id="pnl-bars")
+                bars.border_title = "P&L % by position"
+                yield bars
             with TabPane("Bitcoin", id="tab-bitcoin"):
                 yield BitcoinMetricsPanel(id="btc-panel")
 
@@ -558,6 +571,8 @@ class PortfolioApp(App[None]):
         self.query_one(PieChart).set_data(
             list(category_totals.items()), hide_values=self.hide_values
         )
+        # Same filtered positions as the table, so 'e'/'c' filters apply here too.
+        self.query_one(PnLBarChart).set_data(positions)
 
         # --- Status bar ---
         # Convert the UTC timestamp to the BRT timezone for a local-friendly display.
