@@ -8,11 +8,12 @@
 from textual.app import App, ComposeResult
 from textual.widgets import Input, Label
 
-from portfolio.core.models import Position
+from portfolio.core.models import FixedIncomePosition, Position
 from portfolio.ui.tui.modals import (
     AddPositionModal,
     AvgPriceModal,
     ConfirmModal,
+    FixedIncomeModal,
     QuantityModal,
 )
 
@@ -123,3 +124,49 @@ async def test_confirm_modal_yes_no() -> None:
         await pilot.press("escape")
         await pilot.pause()
     assert no == [False]
+
+
+async def test_fixed_income_modal_add() -> None:
+    result: list[FixedIncomePosition | None] = []
+    async with _Host().run_test() as pilot:
+        pilot.app.push_screen(FixedIncomeModal(), result.append)
+        await pilot.pause()
+        assert pilot.app.screen.query_one("#fi-name", Input).value == ""
+        pilot.app.screen.query_one("#fi-name", Input).value = "  LCI Banco X  "
+        pilot.app.screen.query_one("#fi-amount", Input).value = "15000"
+        await pilot.click("#save")
+        await pilot.pause()
+    assert result == [FixedIncomePosition(name="LCI Banco X", amount_brl=15000)]
+
+
+async def test_fixed_income_modal_edit_prefills() -> None:
+    result: list[FixedIncomePosition | None] = []
+    current = FixedIncomePosition(name="CDB Itaú", amount_brl=604000)
+    async with _Host().run_test() as pilot:
+        pilot.app.push_screen(FixedIncomeModal(current), result.append)
+        await pilot.pause()
+        assert pilot.app.screen.query_one("#fi-name", Input).value == "CDB Itaú"
+        assert pilot.app.screen.query_one("#fi-amount", Input).value == "604000"
+        pilot.app.screen.query_one("#fi-amount", Input).value = "610000"
+        await pilot.press("enter")
+        await pilot.pause()
+    assert result == [FixedIncomePosition(name="CDB Itaú", amount_brl=610000)]
+
+
+async def test_fixed_income_modal_rejects_blank_name_and_bad_amount() -> None:
+    result: list[FixedIncomePosition | None] = []
+    async with _Host().run_test() as pilot:
+        pilot.app.push_screen(FixedIncomeModal(), result.append)
+        await pilot.pause()
+        pilot.app.screen.query_one("#fi-amount", Input).value = "100"
+        await pilot.click("#save")  # blank name
+        await pilot.pause()
+        assert result == []
+        pilot.app.screen.query_one("#fi-name", Input).value = "LCI"
+        pilot.app.screen.query_one("#fi-amount", Input).value = "0"
+        await pilot.click("#save")  # amount must be > 0
+        await pilot.pause()
+        assert result == []
+        await pilot.press("escape")
+        await pilot.pause()
+    assert result == [None]

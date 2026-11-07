@@ -18,7 +18,7 @@ from portfolio.core.exceptions import (
     DuplicateTickerError,
     PositionNotFoundError,
 )
-from portfolio.core.models import Position
+from portfolio.core.models import FixedIncomePosition, Position
 from portfolio.core.reader import row_to_fixed_income, row_to_position
 from portfolio.core.settings import Settings
 from portfolio.core.sheets_store import GoogleSheetsStore
@@ -121,6 +121,10 @@ class _FakeSpreadsheet:
             raise gspread.exceptions.WorksheetNotFound(name)
         return self.tabs[name]
 
+    def add_worksheet(self, title: str, rows: int, cols: int) -> _FakeWorksheet:
+        self.tabs[title] = _FakeWorksheet([])
+        return self.tabs[title]
+
 
 class _FakeClient:
     def __init__(self, spreadsheet: _FakeSpreadsheet) -> None:
@@ -216,3 +220,43 @@ async def test_sheets_remove_position(
     store = _store(monkeypatch, {"Sheet": positions})
     await store.remove_position("ITSA4.SA")
     assert [r[0] for r in positions.rows[1:3]] == ["SAP.DE", ""]
+
+
+async def test_sheets_update_add_remove_fixed_income(
+    monkeypatch: pytest.MonkeyPatch, positions: _FakeWorksheet
+) -> None:
+    fixed = _FakeWorksheet([["Name", "Amount"], ["CDB Itaú", 624000], ["", ""]])
+    store = _store(monkeypatch, {"Sheet": positions, "FixedIncome": fixed})
+
+    await store.update_fixed_income(
+        "CDB Itaú", FixedIncomePosition(name="CDB Itaú", amount_brl=630000)
+    )
+    assert fixed.rows[1] == ["CDB Itaú", 630000]
+
+    await store.add_fixed_income(FixedIncomePosition(name="LCI", amount_brl=10))
+    # Lands right after the last name, before the blank trailing row.
+    assert fixed.rows[2] == ["LCI", 10]
+
+    with pytest.raises(DuplicateTickerError):
+        await store.add_fixed_income(FixedIncomePosition(name="LCI", amount_brl=1))
+    with pytest.raises(DuplicateTickerError):
+        await store.update_fixed_income(
+            "LCI", FixedIncomePosition(name="CDB Itaú", amount_brl=1)
+        )
+
+    await store.remove_fixed_income("CDB Itaú")
+    assert [r[0] for r in fixed.rows[1:]] == ["LCI", ""]
+    with pytest.raises(PositionNotFoundError):
+        await store.remove_fixed_income("CDB Itaú")
+
+
+async def test_sheets_add_fixed_income_creates_tab(
+    monkeypatch: pytest.MonkeyPatch, positions: _FakeWorksheet
+) -> None:
+    tabs = {"Sheet": positions}
+    store = _store(monkeypatch, tabs)
+    await store.add_fixed_income(FixedIncomePosition(name="Poupança", amount_brl=50))
+    assert tabs["FixedIncome"].rows == [["Name", "Amount"], ["Poupança", 50]]
+    assert [(i.name, i.amount_brl) for i in await store.read_fixed_income()] == [
+        ("Poupança", 50)
+    ]

@@ -76,17 +76,19 @@ class ConfigError(Exception):
 
 
 class PositionNotFoundError(Exception):
-    """Raised when an edit targets a ticker that isn't in the spreadsheet.
+    """Raised when an edit targets a ticker or name that isn't in the spreadsheet.
 
     The writer (`writer.py`) raises this when asked to update or delete a row
-    whose ticker it cannot find in the first sheet. Catching this specific type
-    lets the UI show a friendly "no such position" message instead of a crash.
+    whose ticker (positions sheet) or name (FixedIncome sheet) it cannot find.
+    Catching this specific type lets the UI show a friendly "no such position"
+    message instead of a crash.
     """
 
 
 class DuplicateTickerError(Exception):
-    """Raised when adding a ticker that already exists in the spreadsheet.
+    """Raised when adding a ticker (or fixed-income name) that already exists.
 
-    Each ticker should appear at most once in the positions sheet, so the writer
-    refuses to append a second row for a ticker that is already present.
+    Each ticker should appear at most once in the positions sheet, and each name
+    at most once in the FixedIncome sheet, because that is how a row is found
+    again later. The writer refuses to create a second row with the same key.
     """

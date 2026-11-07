@@ -42,7 +42,9 @@ class PortfolioStore(Protocol):
     - Row 1 is a header; rows with a blank ticker/quantity are skipped.
     - A missing FixedIncome tab means "no fixed income", not an error.
     - Editing an unknown ticker raises `PositionNotFoundError`; adding an
-      existing one raises `DuplicateTickerError`.
+      existing one raises `DuplicateTickerError`. Fixed income follows the same
+      rules, keyed by name instead of ticker.
+    - Adding fixed income when the FixedIncome tab is missing creates it.
 
     The `...` bodies are not placeholders to fill in later — in a Protocol they
     mean "this is only a signature; implementations provide the body".
@@ -58,6 +60,11 @@ class PortfolioStore(Protocol):
     async def set_avg_price(self, ticker: str, avg_price: float) -> None: ...
     async def add_position(self, position: Position) -> None: ...
     async def remove_position(self, ticker: str) -> None: ...
+    async def update_fixed_income(
+        self, name: str, item: FixedIncomePosition
+    ) -> None: ...
+    async def add_fixed_income(self, item: FixedIncomePosition) -> None: ...
+    async def remove_fixed_income(self, name: str) -> None: ...
 
 
 class ExcelStore:
@@ -88,6 +95,15 @@ class ExcelStore:
 
     async def remove_position(self, ticker: str) -> None:
         await writer.remove_position(self.path, ticker)
+
+    async def update_fixed_income(self, name: str, item: FixedIncomePosition) -> None:
+        await writer.update_fixed_income(self.path, name, item)
+
+    async def add_fixed_income(self, item: FixedIncomePosition) -> None:
+        await writer.add_fixed_income(self.path, item)
+
+    async def remove_fixed_income(self, name: str) -> None:
+        await writer.remove_fixed_income(self.path, name)
 
 
 def get_store(settings: Settings) -> PortfolioStore:
