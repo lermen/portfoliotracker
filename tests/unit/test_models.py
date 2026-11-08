@@ -30,12 +30,14 @@ def test_portfolio_snapshot_total() -> None:
 
     pv = PositionValue(
         ticker="AAPL", quantity=10, price=150.0, value=1500.0,
+        value_brl=8250.0,  # 1500 USD at an FX rate of 5.5
         exchange="NASDAQ", category="Stock",
     )
     snap = PortfolioSnapshot(
         positions=[pv],
-        total_value=1500.0,
+        total_value=8250.0,  # totals are summed in BRL (value_brl)
         timestamp=datetime.now(UTC),
     )
-    assert snap.total_value == 1500.0
-    assert snap.currency == "USD"
+    assert snap.total_value == 8250.0
+    assert snap.currency == "BRL"  # snapshots always report in BRL
+    assert snap.fixed_income == []  # defaults to an empty list, not None
