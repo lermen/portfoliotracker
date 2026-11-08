@@ -232,7 +232,9 @@ this structure:
 - Blank rows are ignored.
 
 A second tab named **`FixedIncome`** (optional) holds fixed-income positions:
-column A is a name, column B the current amount in BRL.
+column A is a name, column B the current amount in BRL. You can also manage it
+from the app's **Fixed Income** tab (see below); the tab is created for you on
+the first add.
 
 ### Ticker format by exchange
 
@@ -270,7 +272,8 @@ Pick whichever is easiest — all of them work with both Excel and Google Sheets
 - **Inside the app:** press `A` to add a position, `u` to change a quantity,
   `P` for the average price, `D` to delete (see
   [Running the tracker](#running-the-tracker)). The app writes the change to
-  whichever store you use.
+  whichever store you use. On the **Fixed Income** tab the same keys work on
+  fixed-income entries: `A` adds one, `u` edits its name and amount, `D` deletes.
 - **Excel:** open `data/portfolio.xlsx` in any spreadsheet application, add a
   row at the bottom of the first tab, and save.
 - **Google Sheets:** open the sheet in your browser and add a row at the bottom
@@ -389,10 +392,10 @@ Prices refresh automatically every 30 seconds (or whatever is set in `.env`).
 | `escape` | Collapse the expanded detail row |
 | `p` / `v` / `n` | Sort by P&L / Value / Name |
 | `d` / `w` | Sort by 24h / 1-week change |
-| `u` | Edit the selected position's quantity |
+| `u` | Edit the selected position's quantity (on the Fixed Income tab: its name and amount) |
 | `P` | Edit the selected position's average price |
-| `A` | Add a new position |
-| `D` | Delete the selected position |
+| `A` | Add a new position (or fixed-income entry, on the Fixed Income tab) |
+| `D` | Delete the selected position (or fixed-income entry, on the Fixed Income tab) |
 
 > Editing keys (`u`, `P`, `A`, `D`) write straight to your portfolio (the Excel
 > file or the Google Sheet) and the table refreshes within a second. `P`, `A`, and `D` use capital letters

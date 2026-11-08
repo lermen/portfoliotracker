@@ -6,11 +6,12 @@
 #
 # Design goals
 # ------------
-# 1. **Surgical edits.** The spreadsheet holds data the app does not manage —
-#    the hand-typed "Avg Price" column, non-B3 rows, and the whole "FixedIncome"
-#    sheet. So we open the existing workbook and change only the specific cells
-#    we need, rather than regenerating the file from our in-memory model (which
-#    would wipe everything the app doesn't know about).
+# 1. **Surgical edits.** The spreadsheet can hold things the app does not model —
+#    extra columns, formatting, other tabs. So we open the existing workbook and
+#    change only the specific cells we need, rather than regenerating the file
+#    from our in-memory model (which would wipe everything the app doesn't know
+#    about). An edit to the positions sheet never touches the FixedIncome sheet,
+#    and vice versa.
 #
 # 2. **Same threading model as the reader.** openpyxl is a blocking library, so
 #    the public functions are `async` and run the blocking work in a background
@@ -20,7 +21,7 @@
 # 3. **Matches the reader's contract.** The reader looks at the *first* sheet and
 #    reads columns A–E as Ticker, Quantity, Exchange, Category, Avg Price. The
 #    writer uses those exact positions so a value written here is read back the
-#    same way.
+#    same way. Likewise for the "FixedIncome" sheet: A = Name, B = Amount.
 
 import asyncio
 from pathlib import Path
@@ -29,7 +30,7 @@ import openpyxl
 import structlog
 
 from portfolio.core.exceptions import DuplicateTickerError, PositionNotFoundError
-from portfolio.core.models import Position
+from portfolio.core.models import FixedIncomePosition, Position
 
 log = structlog.get_logger()
 
@@ -45,9 +46,18 @@ _COL_AVG_PRICE = 5  # E
 
 _FIRST_DATA_ROW = 2  # row 1 is the header, so real positions start at row 2
 
+# The FixedIncome sheet: A = Name, B = Amount (same layout the reader expects).
+_FIXED_INCOME_SHEET = "FixedIncome"
+_FI_HEADER = ("Name", "Amount")
+_COL_FI_NAME = 1    # A
+_COL_FI_AMOUNT = 2  # B
 
-def _find_ticker_row(ws: openpyxl.worksheet.worksheet.Worksheet, ticker: str) -> int | None:
-    """Return the 1-based row number whose column A matches `ticker`, or None.
+
+def _find_row(ws: openpyxl.worksheet.worksheet.Worksheet, key: str) -> int | None:
+    """Return the 1-based row number whose column A matches `key`, or None.
+
+    Both sheets keep their identifier in column A — the ticker on the positions
+    sheet, the name on the FixedIncome sheet — so one helper serves both.
 
     The comparison mirrors the reader: it compares the *stripped* string form of
     each cell so trailing spaces in the spreadsheet never cause a false miss.
@@ -55,7 +65,7 @@ def _find_ticker_row(ws: openpyxl.worksheet.worksheet.Worksheet, ticker: str) ->
     `ws.iter_rows(..., values_only=False)` yields `Cell` objects (not raw values)
     because we need each cell's `.row` number to know where the match is.
     """
-    target = ticker.strip()
+    target = key.strip()
     for row in ws.iter_rows(min_row=_FIRST_DATA_ROW, min_col=_COL_TICKER, max_col=_COL_TICKER):
         cell = row[0]
         if cell.value is not None and str(cell.value).strip() == target:
@@ -96,6 +106,25 @@ def _open_positions_sheet(path: Path) -> tuple[openpyxl.Workbook, openpyxl.works
     return wb, wb.worksheets[0]
 
 
+def _open_fixed_income_sheet(
+    path: Path,
+) -> tuple[openpyxl.Workbook, openpyxl.worksheet.worksheet.Worksheet]:
+    """Open the workbook for editing and return (workbook, FixedIncome sheet).
+
+    The reader treats a missing FixedIncome sheet as "no fixed income", so the
+    very first add must be able to create it. `create_sheet` appends a new tab at
+    the end of the workbook, which keeps the positions sheet first, where the
+    reader expects it. The header row is written so the file stays readable by
+    hand and the reader's "skip row 1" rule still holds.
+    """
+    wb = openpyxl.load_workbook(path)
+    if _FIXED_INCOME_SHEET not in wb.sheetnames:
+        ws = wb.create_sheet(_FIXED_INCOME_SHEET)
+        ws.append(_FI_HEADER)
+        log.info("fixed_income_sheet_created", path=str(path))
+    return wb, wb[_FIXED_INCOME_SHEET]
+
+
 # --- synchronous helpers (blocking; run inside asyncio.to_thread) --------------
 
 
@@ -107,7 +136,7 @@ def _set_quantity(path: Path, ticker: str, quantity: float) -> None:
         raise ValueError(f"Quantity must be greater than 0, got {quantity}")
 
     wb, ws = _open_positions_sheet(path)
-    row = _find_ticker_row(ws, ticker)
+    row = _find_row(ws, ticker)
     if row is None:
         wb.close()
         raise PositionNotFoundError(f"Ticker {ticker!r} not found in {path}")
@@ -126,7 +155,7 @@ def _set_avg_price(path: Path, ticker: str, avg_price: float) -> None:
         raise ValueError(f"Average price must be greater than 0, got {avg_price}")
 
     wb, ws = _open_positions_sheet(path)
-    row = _find_ticker_row(ws, ticker)
+    row = _find_row(ws, ticker)
     if row is None:
         wb.close()
         raise PositionNotFoundError(f"Ticker {ticker!r} not found in {path}")
@@ -141,7 +170,7 @@ def _add_position(path: Path, position: Position) -> None:
     """Append a new position row. Blocking. Raises if the ticker already exists."""
     wb, ws = _open_positions_sheet(path)
 
-    if _find_ticker_row(ws, position.ticker) is not None:
+    if _find_row(ws, position.ticker) is not None:
         wb.close()
         raise DuplicateTickerError(
             f"Ticker {position.ticker!r} already exists in {path}"
@@ -165,7 +194,7 @@ def _add_position(path: Path, position: Position) -> None:
 def _remove_position(path: Path, ticker: str) -> None:
     """Delete the row for an existing ticker. Blocking."""
     wb, ws = _open_positions_sheet(path)
-    row = _find_ticker_row(ws, ticker)
+    row = _find_row(ws, ticker)
     if row is None:
         wb.close()
         raise PositionNotFoundError(f"Ticker {ticker!r} not found in {path}")
@@ -176,6 +205,68 @@ def _remove_position(path: Path, ticker: str) -> None:
     wb.save(path)
     wb.close()
     log.info("position_removed", ticker=ticker)
+
+
+def _update_fixed_income(path: Path, name: str, item: FixedIncomePosition) -> None:
+    """Overwrite the row for `name` with `item` (new name and/or amount). Blocking.
+
+    Renaming is allowed, but not onto a name another row already uses: names are
+    the row identifiers, so two rows with the same name could never be told apart.
+    """
+    wb, ws = _open_fixed_income_sheet(path)
+    row = _find_row(ws, name)
+    if row is None:
+        wb.close()
+        raise PositionNotFoundError(f"Fixed income {name!r} not found in {path}")
+
+    # `other_row not in (None, row)`: a match on *this same* row is fine (the
+    # name didn't change); a match on any other row is a clash.
+    other_row = _find_row(ws, item.name)
+    if other_row not in (None, row):
+        wb.close()
+        raise DuplicateTickerError(
+            f"Fixed income {item.name!r} already exists in {path}"
+        )
+
+    ws.cell(row=row, column=_COL_FI_NAME, value=item.name)
+    ws.cell(row=row, column=_COL_FI_AMOUNT, value=item.amount_brl)
+    wb.save(path)
+    wb.close()
+    log.info(
+        "fixed_income_updated", name=name, new_name=item.name, amount=item.amount_brl
+    )
+
+
+def _add_fixed_income(path: Path, item: FixedIncomePosition) -> None:
+    """Append a new fixed-income row, creating the sheet if needed. Blocking."""
+    wb, ws = _open_fixed_income_sheet(path)
+
+    if _find_row(ws, item.name) is not None:
+        wb.close()
+        raise DuplicateTickerError(
+            f"Fixed income {item.name!r} already exists in {path}"
+        )
+
+    row = _last_data_row(ws) + 1
+    ws.cell(row=row, column=_COL_FI_NAME, value=item.name)
+    ws.cell(row=row, column=_COL_FI_AMOUNT, value=item.amount_brl)
+    wb.save(path)
+    wb.close()
+    log.info("fixed_income_added", name=item.name, amount=item.amount_brl)
+
+
+def _remove_fixed_income(path: Path, name: str) -> None:
+    """Delete the fixed-income row for `name`. Blocking."""
+    wb, ws = _open_fixed_income_sheet(path)
+    row = _find_row(ws, name)
+    if row is None:
+        wb.close()
+        raise PositionNotFoundError(f"Fixed income {name!r} not found in {path}")
+
+    ws.delete_rows(row, 1)
+    wb.save(path)
+    wb.close()
+    log.info("fixed_income_removed", name=name)
 
 
 # --- async public API (call these from the app) -------------------------------
@@ -199,3 +290,18 @@ async def add_position(path: Path, position: Position) -> None:
 async def remove_position(path: Path, ticker: str) -> None:
     """Remove an existing position, off the event loop."""
     await asyncio.to_thread(_remove_position, path, ticker)
+
+
+async def update_fixed_income(path: Path, name: str, item: FixedIncomePosition) -> None:
+    """Replace an existing fixed-income entry's name and amount, off the event loop."""
+    await asyncio.to_thread(_update_fixed_income, path, name, item)
+
+
+async def add_fixed_income(path: Path, item: FixedIncomePosition) -> None:
+    """Append a new fixed-income entry, off the event loop."""
+    await asyncio.to_thread(_add_fixed_income, path, item)
+
+
+async def remove_fixed_income(path: Path, name: str) -> None:
+    """Remove an existing fixed-income entry, off the event loop."""
+    await asyncio.to_thread(_remove_fixed_income, path, name)

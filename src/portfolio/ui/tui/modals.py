@@ -15,7 +15,7 @@
 # closes. We call `self.dismiss(value)` to close the dialog and hand `value` back
 # to the app. Dismissing with `None` conventionally means "the user cancelled".
 #
-# These widgets import only from `portfolio.core.models` (for the `Position`
+# These widgets import only from `portfolio.core.models` (for the model
 # type) — never from the engine or fetcher — which keeps the UI/backend
 # separation rule intact.
 
@@ -25,7 +25,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label
 
-from portfolio.core.models import Position
+from portfolio.core.models import FixedIncomePosition, Position
 
 
 class QuantityModal(ModalScreen[float | None]):
@@ -217,6 +217,85 @@ class AddPositionModal(ModalScreen[Position | None]):
             self.notify("Check the ticker and quantity (quantity must be > 0)", severity="error")
             return
         self.dismiss(position)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class FixedIncomeModal(ModalScreen[FixedIncomePosition | None]):
+    """Add a new fixed-income entry, or edit an existing one.
+
+    Pass `current=None` to add; pass the existing entry to edit it, and the
+    fields start pre-filled. One dialog serves both because the fields are the
+    same — only the title, the pre-filled values and the button label differ.
+
+    Returns a validated `FixedIncomePosition`, or None if cancelled.
+    """
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def __init__(self, current: FixedIncomePosition | None = None) -> None:
+        super().__init__()
+        self.current = current
+
+    def compose(self) -> ComposeResult:
+        # A conditional expression (`a if cond else b`) picks the text once,
+        # so the rest of `compose` doesn't need separate add/edit branches.
+        editing = self.current is not None
+        title = (
+            f"Edit fixed income — {self.current.name}"
+            if self.current
+            else "Add fixed income"
+        )
+        with Vertical(id="dialog"):
+            yield Label(title, id="dialog-title")
+            yield Label("Name (e.g. CDB Banco XYZ 120% CDI)")
+            yield Input(
+                value=self.current.name if self.current else "",
+                placeholder="Name",
+                id="fi-name",
+            )
+            yield Label("Amount (R$)")
+            yield Input(
+                value=f"{self.current.amount_brl:g}" if self.current else "",
+                placeholder="e.g. 15000",
+                type="number",
+                id="fi-amount",
+            )
+            with Horizontal(id="dialog-buttons"):
+                yield Button("Save" if editing else "Add", variant="primary", id="save")
+                yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        # When editing, the amount is what usually changes, so start there.
+        target = "#fi-amount" if self.current else "#fi-name"
+        self.query_one(target, Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._save()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "save":
+            self._save()
+        else:
+            self.dismiss(None)
+
+    def _save(self) -> None:
+        name = self.query_one("#fi-name", Input).value.strip()
+        if not name:
+            self.notify("Name is required", severity="error")
+            return
+        try:
+            # Pydantic enforces `amount_brl > 0` (see `Field(gt=0)` in models.py);
+            # `float("")` raises ValueError for a blank amount.
+            item = FixedIncomePosition(
+                name=name,
+                amount_brl=float(self.query_one("#fi-amount", Input).value.strip()),
+            )
+        except (ValidationError, ValueError):
+            self.notify("Amount must be a number greater than 0", severity="error")
+            return
+        self.dismiss(item)
 
     def action_cancel(self) -> None:
         self.dismiss(None)

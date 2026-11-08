@@ -48,6 +48,9 @@ _COL_AVG_PRICE = 5  # E
 
 _FIRST_DATA_ROW = 2  # row 1 is the header
 _FIXED_INCOME_TAB = "FixedIncome"
+_FI_HEADER = ("Name", "Amount")
+_COL_FI_NAME = 1    # A
+_COL_FI_AMOUNT = 2  # B
 
 # A `TypeVar` is a placeholder for "some type, decided by the caller". In
 # `_call` below it says: whatever type `fn` returns, `_call` returns the same.
@@ -120,14 +123,17 @@ class GoogleSheetsStore:
         )
         return rows[_FIRST_DATA_ROW - 1 :]
 
-    def _find_ticker_row(self, ws: gspread.Worksheet, ticker: str) -> int | None:
-        """Return the 1-based row number holding `ticker` in column A, or None.
+    def _find_row(self, ws: gspread.Worksheet, key: str) -> int | None:
+        """Return the 1-based row number holding `key` in column A, or None.
+
+        Column A is the ticker on the positions tab and the name on the
+        FixedIncome tab, so the same lookup serves both.
 
         Called fresh before every edit — never from a cached copy — so if
         another computer added or removed rows in the meantime, we still edit
         the right one.
         """
-        target = ticker.strip()
+        target = key.strip()
         tickers = ws.col_values(_COL_TICKER)
         # `enumerate(seq, start=1)` yields (1, first), (2, second), ... so the
         # counter matches the sheet's 1-based row numbers.
@@ -136,11 +142,21 @@ class GoogleSheetsStore:
                 return row
         return None
 
-    def _require_row(self, ws: gspread.Worksheet, ticker: str) -> int:
-        row = self._find_ticker_row(ws, ticker)
+    def _require_row(
+        self, ws: gspread.Worksheet, key: str, label: str = "Ticker"
+    ) -> int:
+        row = self._find_row(ws, key)
         if row is None:
-            raise PositionNotFoundError(f"Ticker {ticker!r} not found in the sheet")
+            raise PositionNotFoundError(f"{label} {key!r} not found in the sheet")
         return row
+
+    def _last_row(self, ws: gspread.Worksheet) -> int:
+        """Return the last row with a non-empty column A (1 if only the header)."""
+        keys = ws.col_values(_COL_TICKER)
+        return max(
+            (i for i, v in enumerate(keys, start=1) if v and str(v).strip()),
+            default=_FIRST_DATA_ROW - 1,
+        )
 
     def _read_positions(self) -> list[Position]:
         rows = self._rows(self._positions_tab())
@@ -167,17 +183,13 @@ class GoogleSheetsStore:
 
     def _add_position(self, position: Position) -> None:
         ws = self._positions_tab()
-        if self._find_ticker_row(ws, position.ticker) is not None:
+        if self._find_row(ws, position.ticker) is not None:
             raise DuplicateTickerError(
                 f"Ticker {position.ticker!r} already exists in the sheet"
             )
         # Insert right after the last non-empty ticker, mirroring the Excel
         # writer. `insert_row` also grows the sheet if it has no spare rows.
-        tickers = ws.col_values(_COL_TICKER)
-        last = max(
-            (i for i, v in enumerate(tickers, start=1) if v and str(v).strip()),
-            default=_FIRST_DATA_ROW - 1,
-        )
+        last = self._last_row(ws)
         values: list[str | float] = [
             position.ticker,
             position.quantity,
@@ -191,6 +203,45 @@ class GoogleSheetsStore:
     def _remove_position(self, ticker: str) -> None:
         ws = self._positions_tab()
         ws.delete_rows(self._require_row(ws, ticker))
+
+    def _fixed_income_tab(self) -> gspread.Worksheet:
+        """Return the FixedIncome tab, creating it (with a header) if missing.
+
+        Only the write paths use this. Reading still treats a missing tab as
+        "no fixed income" rather than creating one as a side effect.
+        """
+        sheet = self._client.open_by_key(self.spreadsheet_id)
+        try:
+            return sheet.worksheet(_FIXED_INCOME_TAB)
+        except gspread.exceptions.WorksheetNotFound:
+            ws = sheet.add_worksheet(title=_FIXED_INCOME_TAB, rows=100, cols=2)
+            ws.insert_row(list(_FI_HEADER), index=1)
+            log.info("gsheets_fixed_income_tab_created")
+            return ws
+
+    def _update_fixed_income(self, name: str, item: FixedIncomePosition) -> None:
+        ws = self._fixed_income_tab()
+        row = self._require_row(ws, name, label="Fixed income")
+        # Renaming onto a name some *other* row already uses would make the two
+        # rows impossible to tell apart, so refuse it (same rule as Excel).
+        if self._find_row(ws, item.name) not in (None, row):
+            raise DuplicateTickerError(
+                f"Fixed income {item.name!r} already exists in the sheet"
+            )
+        ws.update_cell(row, _COL_FI_NAME, item.name)
+        ws.update_cell(row, _COL_FI_AMOUNT, item.amount_brl)
+
+    def _add_fixed_income(self, item: FixedIncomePosition) -> None:
+        ws = self._fixed_income_tab()
+        if self._find_row(ws, item.name) is not None:
+            raise DuplicateTickerError(
+                f"Fixed income {item.name!r} already exists in the sheet"
+            )
+        ws.insert_row([item.name, item.amount_brl], index=self._last_row(ws) + 1)
+
+    def _remove_fixed_income(self, name: str) -> None:
+        ws = self._fixed_income_tab()
+        ws.delete_rows(self._require_row(ws, name, label="Fixed income"))
 
     # --- async public API (the PortfolioStore contract) ------------------------
     #
@@ -226,3 +277,17 @@ class GoogleSheetsStore:
     async def remove_position(self, ticker: str) -> None:
         await asyncio.to_thread(self._call, lambda: self._remove_position(ticker))
         log.info("position_removed", ticker=ticker)
+
+    async def update_fixed_income(self, name: str, item: FixedIncomePosition) -> None:
+        await asyncio.to_thread(
+            self._call, lambda: self._update_fixed_income(name, item)
+        )
+        log.info("fixed_income_updated", name=name, new_name=item.name)
+
+    async def add_fixed_income(self, item: FixedIncomePosition) -> None:
+        await asyncio.to_thread(self._call, lambda: self._add_fixed_income(item))
+        log.info("fixed_income_added", name=item.name, amount=item.amount_brl)
+
+    async def remove_fixed_income(self, name: str) -> None:
+        await asyncio.to_thread(self._call, lambda: self._remove_fixed_income(name))
+        log.info("fixed_income_removed", name=name)

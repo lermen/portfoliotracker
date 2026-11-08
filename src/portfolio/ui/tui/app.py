@@ -38,6 +38,7 @@ from portfolio.core.bitcoin_fetcher import run_bitcoin_engine
 from portfolio.core.engine import run_engine
 from portfolio.core.models import (
     BitcoinMetrics,
+    FixedIncomePosition,
     PortfolioSnapshot,
     Position,
     PositionValue,
@@ -49,6 +50,7 @@ from portfolio.ui.tui.modals import (
     AddPositionModal,
     AvgPriceModal,
     ConfirmModal,
+    FixedIncomeModal,
     QuantityModal,
 )
 from portfolio.ui.tui.widgets import (
@@ -108,7 +110,9 @@ class PortfolioApp(App[None]):
         # don't collide with the lowercase filter/sort keys above and read as
         # "mutating" actions. Edit is bound to both "u" and "U" (comma-separated
         # keys in one binding) so it works whether or not Shift is held.
-        ("u,U", "edit_quantity", "Edit qty"),
+        # Edit/Add/Delete act on whichever tab is open: on the Fixed Income tab
+        # they edit fixed-income entries instead of stock positions.
+        ("u,U", "edit_quantity", "Edit"),
         ("P", "edit_avg_price", "Edit avg"),
         ("A", "add_position", "Add"),
         ("D", "delete_position", "Delete"),
@@ -356,6 +360,14 @@ class PortfolioApp(App[None]):
     # After a successful write we set `refresh_event`, which wakes the engine so
     # the change is fetched and re-rendered within a second.
 
+    def _on_fixed_income_tab(self) -> bool:
+        """True when the Fixed Income tab is the one currently shown.
+
+        `TabbedContent.active` holds the id of the visible `TabPane`, so the
+        edit keys can route to the right table without needing separate keys.
+        """
+        return self.query_one("#tabs", TabbedContent).active == "tab-fixed-income"
+
     def _quantity_for(self, ticker: str) -> float | None:
         """Look up the current quantity of a ticker in the latest snapshot."""
         if self.snapshot is None:
@@ -367,6 +379,9 @@ class PortfolioApp(App[None]):
 
     def action_edit_quantity(self) -> None:
         """Open a dialog to edit the quantity of the selected position."""
+        if self._on_fixed_income_tab():
+            self._edit_fixed_income()
+            return
         ticker = self.query_one(PortfolioTable).selected_ticker()
         if ticker is None:
             self.notify("Select a position in the Portfolio tab first", severity="warning")
@@ -394,6 +409,12 @@ class PortfolioApp(App[None]):
 
     def action_edit_avg_price(self) -> None:
         """Open a dialog to edit the average price of the selected position."""
+        if self._on_fixed_income_tab():
+            self.notify(
+                "Fixed income has no average price — press U to edit",
+                severity="warning",
+            )
+            return
         ticker = self.query_one(PortfolioTable).selected_ticker()
         if ticker is None:
             self.notify("Select a position in the Portfolio tab first", severity="warning")
@@ -409,6 +430,10 @@ class PortfolioApp(App[None]):
 
     def action_add_position(self) -> None:
         """Open a dialog to add a new position."""
+        if self._on_fixed_income_tab():
+            self._add_fixed_income()
+            return
+
         def on_result(position: Position | None) -> None:
             if position is None:
                 return
@@ -418,6 +443,9 @@ class PortfolioApp(App[None]):
 
     def action_delete_position(self) -> None:
         """Open a confirmation dialog, then delete the selected position."""
+        if self._on_fixed_income_tab():
+            self._delete_fixed_income()
+            return
         ticker = self.query_one(PortfolioTable).selected_ticker()
         if ticker is None:
             self.notify("Select a position in the Portfolio tab first", severity="warning")
@@ -431,6 +459,52 @@ class PortfolioApp(App[None]):
                 self.run_worker(self._apply_remove_position(ticker))
 
         self.push_screen(ConfirmModal(f"Delete {ticker}?"), on_result)
+
+    # --- fixed-income editing (reached through the same keys, see above) ---
+
+    def _fixed_income_for(self, name: str) -> FixedIncomePosition | None:
+        """Look up a fixed-income entry by name in the latest snapshot."""
+        if self.snapshot is None:
+            return None
+        # `next(generator, default)` returns the first match, or `default` if
+        # the generator runs out — a compact "find first" without a for-loop.
+        return next((fi for fi in self.snapshot.fixed_income if fi.name == name), None)
+
+    def _edit_fixed_income(self) -> None:
+        name = self.query_one(FixedIncomeTable).selected_name()
+        current = self._fixed_income_for(name) if name is not None else None
+        if name is None or current is None:
+            self.notify(
+                "Select an entry in the Fixed Income tab first", severity="warning"
+            )
+            return
+
+        def on_result(item: FixedIncomePosition | None) -> None:
+            if item is not None:
+                self.run_worker(self._apply_update_fixed_income(name, item))
+
+        self.push_screen(FixedIncomeModal(current), on_result)
+
+    def _add_fixed_income(self) -> None:
+        def on_result(item: FixedIncomePosition | None) -> None:
+            if item is not None:
+                self.run_worker(self._apply_add_fixed_income(item))
+
+        self.push_screen(FixedIncomeModal(), on_result)
+
+    def _delete_fixed_income(self) -> None:
+        name = self.query_one(FixedIncomeTable).selected_name()
+        if name is None:
+            self.notify(
+                "Select an entry in the Fixed Income tab first", severity="warning"
+            )
+            return
+
+        def on_result(confirmed: bool | None) -> None:
+            if confirmed:
+                self.run_worker(self._apply_remove_fixed_income(name))
+
+        self.push_screen(ConfirmModal(f"Delete {name}?"), on_result)
 
     # The `_apply_*` methods are async because the store does file or network I/O.
     # They run as Textual workers (background tasks) so the UI never freezes, and
@@ -470,6 +544,35 @@ class PortfolioApp(App[None]):
             self.notify(f"Could not delete {ticker}: {exc}", severity="error")
             return
         self.notify(f"Removed {ticker}")
+        self.refresh_event.set()
+
+    async def _apply_update_fixed_income(
+        self, name: str, item: FixedIncomePosition
+    ) -> None:
+        try:
+            await self.store.update_fixed_income(name, item)
+        except Exception as exc:
+            self.notify(f"Could not update {name}: {exc}", severity="error")
+            return
+        self.notify(f"{item.name} → R${item.amount_brl:,.2f}")
+        self.refresh_event.set()
+
+    async def _apply_add_fixed_income(self, item: FixedIncomePosition) -> None:
+        try:
+            await self.store.add_fixed_income(item)
+        except Exception as exc:
+            self.notify(f"Could not add {item.name}: {exc}", severity="error")
+            return
+        self.notify(f"Added {item.name}")
+        self.refresh_event.set()
+
+    async def _apply_remove_fixed_income(self, name: str) -> None:
+        try:
+            await self.store.remove_fixed_income(name)
+        except Exception as exc:
+            self.notify(f"Could not delete {name}: {exc}", severity="error")
+            return
+        self.notify(f"Removed {name}")
         self.refresh_event.set()
 
     # --- rendering ---

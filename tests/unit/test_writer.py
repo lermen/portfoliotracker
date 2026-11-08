@@ -13,12 +13,15 @@ import openpyxl
 import pytest
 
 from portfolio.core.exceptions import DuplicateTickerError, PositionNotFoundError
-from portfolio.core.models import Position
+from portfolio.core.models import FixedIncomePosition, Position
 from portfolio.core.writer import (
+    add_fixed_income,
     add_position,
+    remove_fixed_income,
     remove_position,
     set_avg_price,
     set_quantity,
+    update_fixed_income,
 )
 
 
@@ -143,3 +146,92 @@ async def test_other_sheet_is_preserved(book: Path) -> None:
     fi_rows = [tuple(r) for r in wb["FixedIncome"].iter_rows(min_row=2, values_only=True)]
     wb.close()
     assert fi_rows == [("CDB Itaú", 604000)]
+
+
+# --- FixedIncome sheet --------------------------------------------------------
+
+
+def _fi_rows(path: Path) -> list[tuple]:
+    """Read back the FixedIncome sheet's data rows (skipping the header)."""
+    wb = openpyxl.load_workbook(path, data_only=True)
+    rows = [tuple(r) for r in wb["FixedIncome"].iter_rows(min_row=2, values_only=True)]
+    wb.close()
+    return rows
+
+
+async def test_update_fixed_income_amount(book: Path) -> None:
+    await update_fixed_income(
+        book, "CDB Itaú", FixedIncomePosition(name="CDB Itaú", amount_brl=610000)
+    )
+    assert _fi_rows(book) == [("CDB Itaú", 610000)]
+
+
+async def test_update_fixed_income_can_rename(book: Path) -> None:
+    await update_fixed_income(
+        book, "CDB Itaú", FixedIncomePosition(name="CDB Itaú 2027", amount_brl=1)
+    )
+    assert _fi_rows(book) == [("CDB Itaú 2027", 1)]
+
+
+async def test_update_fixed_income_rename_onto_existing_raises(book: Path) -> None:
+    await add_fixed_income(book, FixedIncomePosition(name="Poupança", amount_brl=10))
+    with pytest.raises(DuplicateTickerError):
+        await update_fixed_income(
+            book, "Poupança", FixedIncomePosition(name="CDB Itaú", amount_brl=10)
+        )
+
+
+async def test_update_fixed_income_missing_raises(book: Path) -> None:
+    with pytest.raises(PositionNotFoundError):
+        await update_fixed_income(
+            book, "Nope", FixedIncomePosition(name="Nope", amount_brl=1)
+        )
+
+
+async def test_add_fixed_income_appends_row(book: Path) -> None:
+    await add_fixed_income(
+        book, FixedIncomePosition(name="Tesouro IPCA 2035", amount_brl=5000)
+    )
+    assert _fi_rows(book) == [("CDB Itaú", 604000), ("Tesouro IPCA 2035", 5000)]
+
+
+async def test_add_fixed_income_duplicate_raises(book: Path) -> None:
+    with pytest.raises(DuplicateTickerError):
+        await add_fixed_income(
+            book, FixedIncomePosition(name="CDB Itaú", amount_brl=1)
+        )
+
+
+async def test_add_fixed_income_creates_missing_sheet(tmp_path: Path) -> None:
+    # A workbook with only a positions sheet: the first add creates the
+    # FixedIncome sheet (with its header) after it, leaving positions first.
+    path = tmp_path / "no_fi.xlsx"
+    wb = openpyxl.Workbook()
+    wb.active.append(["Ticker", "Quantity"])
+    wb.save(path)
+
+    await add_fixed_income(path, FixedIncomePosition(name="Poupança", amount_brl=100))
+
+    wb = openpyxl.load_workbook(path)
+    assert wb.sheetnames[1] == "FixedIncome"
+    header = next(wb["FixedIncome"].iter_rows(max_row=1, values_only=True))
+    wb.close()
+    assert header == ("Name", "Amount")
+    assert _fi_rows(path) == [("Poupança", 100)]
+
+
+async def test_remove_fixed_income(book: Path) -> None:
+    await remove_fixed_income(book, "CDB Itaú")
+    assert _fi_rows(book) == []
+    with pytest.raises(PositionNotFoundError):
+        await remove_fixed_income(book, "CDB Itaú")
+
+
+async def test_fixed_income_edits_leave_positions_alone(book: Path) -> None:
+    before = _rows(book)
+    await add_fixed_income(book, FixedIncomePosition(name="LCI", amount_brl=1))
+    await update_fixed_income(
+        book, "LCI", FixedIncomePosition(name="LCI", amount_brl=2)
+    )
+    await remove_fixed_income(book, "LCI")
+    assert _rows(book) == before

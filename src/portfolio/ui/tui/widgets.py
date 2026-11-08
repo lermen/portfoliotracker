@@ -953,6 +953,22 @@ class FixedIncomeTable(DataTable):  # type: ignore[type-arg]
         if saved_row is not None:
             self.move_cursor(row=min(saved_row, self.row_count - 1))
 
+    def selected_name(self) -> str | None:
+        """Return the name of the entry under the cursor, or None if empty.
+
+        Mirrors `PortfolioTable.selected_ticker`: each row was added with
+        `key=fi.name`, so the row key *is* the name the store looks up.
+        """
+        if self.row_count == 0:
+            return None
+        try:
+            row_key = self.coordinate_to_cell_key(
+                Coordinate(self.cursor_row, 0)
+            ).row_key
+        except Exception:
+            return None
+        return str(row_key.value) if row_key.value is not None else None
+
 
 # ---------------------------------------------------------------------------
 # Summary tab
